@@ -11,6 +11,9 @@ import config
 class ModelPlanner:
     VALID_CHANNEL_SIZES = config.VALID_CHANNEL_SIZES
     MUTABLE_MODULES = (nn.Conv2d, nn.Linear, nn.BatchNorm2d, nn.LayerNorm)
+    ACTIVATION_MODULES = (nn.ReLU, nn.GELU, nn.ELU, nn.LeakyReLU, nn.Tanh, nn.Sigmoid, nn.SiLU)
+    NORMALIZATION_MODULES = (nn.BatchNorm2d, nn.GroupNorm, nn.LayerNorm, nn.InstanceNorm2d)
+    POOLING_MODULES = (nn.MaxPool2d, nn.AvgPool2d, nn.AdaptiveMaxPool2d, nn.AdaptiveAvgPool2d)
 
     def __init__(self, model: nn.Module, source_map: dict = None, search_depth: int = 3):
         self.original_model = model
@@ -32,6 +35,23 @@ class ModelPlanner:
 
     def plan_random_mutation(self) -> dict:
         self.clear_plan()
+        
+        # Choose mutation type based on configured weights
+        mutation_types = list(config.MUTATION_TYPE_WEIGHTS.keys())
+        weights = list(config.MUTATION_TYPE_WEIGHTS.values())
+        chosen_mutation_type = random.choices(mutation_types, weights=weights)[0]
+        
+        if chosen_mutation_type == 'dimension':
+            return self._plan_dimension_mutation()
+        elif chosen_mutation_type == 'activation':
+            return self._plan_activation_mutation()
+        elif chosen_mutation_type == 'layer_type':
+            return self._plan_layer_type_mutation()
+        else:
+            return self._plan_dimension_mutation()  # fallback
+
+    def _plan_dimension_mutation(self) -> dict:
+        """Original dimension mutation logic."""
         mutation_groups = self._build_mutation_groups()
         if not mutation_groups:
             return {}
@@ -49,7 +69,7 @@ class ModelPlanner:
         current_plan = {}
         
         def get_base_plan(node_target):
-            return {"new_out": None, "new_in": None, "source_location": self.source_map.get(node_target)}
+            return {"mutation_type": "dimension", "new_out": None, "new_in": None, "source_location": self.source_map.get(node_target)}
 
         for node in mutation_group:
             if node.target == self.final_layer_name:
@@ -70,10 +90,111 @@ class ModelPlanner:
 
         self.plan = current_plan
         if config.DEBUG_MODE:
-            print("[ModelPlanner] Generated mutation plan:")
+            print("[ModelPlanner] Generated dimension mutation plan:")
             import json
             print(json.dumps(self.plan, indent=2))
         return self.plan
+
+    def _plan_activation_mutation(self) -> dict:
+        """Plan mutation of activation functions."""
+        activation_candidates = []
+        
+        # Find all activation function modules
+        for name, module in self.original_model.named_modules():
+            if isinstance(module, self.ACTIVATION_MODULES):
+                module_type = type(module).__name__
+                if module_type in config.ACTIVATION_MUTATIONS:
+                    activation_candidates.append((name, module_type))
+        
+        if not activation_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No mutable activation functions found")
+            return {}
+        
+        # Choose a random activation to mutate
+        target_name, current_activation = random.choice(activation_candidates)
+        possible_mutations = config.ACTIVATION_MUTATIONS[current_activation]
+        new_activation = random.choice(possible_mutations)
+        
+        current_plan = {
+            target_name: {
+                "mutation_type": "activation",
+                "current_activation": current_activation,
+                "new_activation": new_activation,
+                "source_location": self.source_map.get(target_name)
+            }
+        }
+        
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated activation mutation plan: {current_activation} -> {new_activation}")
+            import json
+            print(json.dumps(self.plan, indent=2))
+        return self.plan
+
+    def _plan_layer_type_mutation(self) -> dict:
+        """Plan mutation of layer types (normalization, pooling)."""
+        layer_candidates = []
+        
+        # Find all mutable layer types
+        for name, module in self.original_model.named_modules():
+            module_type = type(module).__name__
+            if module_type in config.LAYER_TYPE_MUTATIONS:
+                layer_candidates.append((name, module_type, module))
+        
+        if not layer_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No mutable layer types found")
+            return {}
+        
+        # Choose a random layer to mutate
+        target_name, current_layer_type, module = random.choice(layer_candidates)
+        possible_mutations = config.LAYER_TYPE_MUTATIONS[current_layer_type]
+        new_layer_type = random.choice(possible_mutations)
+        
+        # Extract relevant parameters for the mutation
+        mutation_params = self._extract_layer_params(module, current_layer_type, new_layer_type)
+        
+        current_plan = {
+            target_name: {
+                "mutation_type": "layer_type",
+                "current_layer_type": current_layer_type,
+                "new_layer_type": new_layer_type,
+                "mutation_params": mutation_params,
+                "source_location": self.source_map.get(target_name)
+            }
+        }
+        
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated layer type mutation plan: {current_layer_type} -> {new_layer_type}")
+            import json
+            print(json.dumps(self.plan, indent=2))
+        return self.plan
+
+    def _extract_layer_params(self, module: nn.Module, current_type: str, new_type: str) -> dict:
+        """Extract parameters needed for layer type mutation."""
+        params = {}
+        
+        if current_type == 'BatchNorm2d' and new_type == 'GroupNorm':
+            params['num_groups'] = min(32, module.num_features)  # Common default
+            params['num_channels'] = module.num_features
+        elif current_type == 'GroupNorm' and new_type == 'BatchNorm2d':
+            params['num_features'] = module.num_channels
+        elif current_type == 'BatchNorm2d' and new_type == 'LayerNorm':
+            params['num_features'] = module.num_features
+            params['normalized_shape'] = [module.num_features]
+        elif current_type == 'LayerNorm' and new_type == 'BatchNorm2d':
+            params['num_features'] = module.normalized_shape[0] if hasattr(module, 'normalized_shape') else 64
+        elif current_type in ['MaxPool2d', 'AvgPool2d'] and new_type in ['MaxPool2d', 'AvgPool2d']:
+            params['kernel_size'] = module.kernel_size
+            params['stride'] = module.stride
+            params['padding'] = module.padding
+        elif current_type in ['MaxPool2d', 'AvgPool2d'] and new_type in ['AdaptiveMaxPool2d', 'AdaptiveAvgPool2d']:
+            # Adaptive pooling uses output_size instead of kernel_size/stride/padding
+            params['output_size'] = (7, 7)  # Common default for adaptive pooling
+        
+        return params
 
     def apply_plan(self) -> nn.Module:
         if not self.plan:
@@ -82,11 +203,72 @@ class ModelPlanner:
         for name, details in self.plan.items():
             try:
                 original_module = new_model.get_submodule(name)
-                mutated_copy = self._create_mutated_copy(original_module, details["new_in"], details["new_out"])
+                mutation_type = details.get("mutation_type", "dimension")  # backward compatibility
+                
+                if mutation_type == "dimension":
+                    mutated_copy = self._create_mutated_copy(original_module, details["new_in"], details["new_out"])
+                elif mutation_type == "activation":
+                    mutated_copy = self._create_activation_mutation(original_module, details["new_activation"])
+                elif mutation_type == "layer_type":
+                    mutated_copy = self._create_layer_type_mutation(original_module, details["new_layer_type"], details["mutation_params"])
+                else:
+                    continue  # skip unknown mutation types
+                    
                 self._set_nested_attr(new_model, name, mutated_copy)
             except AttributeError:
                 continue
         return new_model
+
+    def _create_activation_mutation(self, module: nn.Module, new_activation: str) -> nn.Module:
+        """Create a new activation module with the specified type."""
+        # Preserve common parameters where possible
+        inplace = getattr(module, 'inplace', True)
+        
+        if new_activation == 'ReLU':
+            return nn.ReLU(inplace=inplace)
+        elif new_activation == 'GELU':
+            return nn.GELU()
+        elif new_activation == 'ELU':
+            return nn.ELU(inplace=inplace)
+        elif new_activation == 'LeakyReLU':
+            return nn.LeakyReLU(inplace=inplace)
+        elif new_activation == 'SiLU':
+            return nn.SiLU(inplace=inplace)
+        elif new_activation == 'Tanh':
+            return nn.Tanh()
+        elif new_activation == 'Sigmoid':
+            return nn.Sigmoid()
+        else:
+            return nn.ReLU(inplace=inplace)  # fallback
+
+    def _create_layer_type_mutation(self, module: nn.Module, new_layer_type: str, params: dict) -> nn.Module:
+        """Create a new layer module with the specified type."""
+        if new_layer_type == 'BatchNorm2d':
+            return nn.BatchNorm2d(num_features=params['num_features'])
+        elif new_layer_type == 'GroupNorm':
+            return nn.GroupNorm(num_groups=params['num_groups'], num_channels=params['num_channels'])
+        elif new_layer_type == 'LayerNorm':
+            return nn.LayerNorm(normalized_shape=params.get('normalized_shape', [params['num_features']]))
+        elif new_layer_type == 'InstanceNorm2d':
+            return nn.InstanceNorm2d(num_features=params['num_features'])
+        elif new_layer_type == 'MaxPool2d':
+            return nn.MaxPool2d(
+                kernel_size=params['kernel_size'],
+                stride=params['stride'],
+                padding=params['padding']
+            )
+        elif new_layer_type == 'AvgPool2d':
+            return nn.AvgPool2d(
+                kernel_size=params['kernel_size'],
+                stride=params['stride'],
+                padding=params['padding']
+            )
+        elif new_layer_type == 'AdaptiveMaxPool2d':
+            return nn.AdaptiveMaxPool2d(output_size=params['output_size'])
+        elif new_layer_type == 'AdaptiveAvgPool2d':
+            return nn.AdaptiveAvgPool2d(output_size=params['output_size'])
+        else:
+            return deepcopy(module)  # fallback
 
     def clear_plan(self): self.plan = {}
 

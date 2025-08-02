@@ -10,7 +10,9 @@ import config
 
 class ModuleSourceTracer:
     _instance = None
-    TARGET_MODULES = [nn.Conv2d, nn.Linear, nn.BatchNorm2d, nn.LayerNorm]
+    TARGET_MODULES = [nn.Conv2d, nn.Linear, nn.BatchNorm2d, nn.LayerNorm, 
+                      nn.ReLU, nn.GELU, nn.ELU, nn.LeakyReLU, nn.Tanh, nn.Sigmoid, nn.SiLU,
+                      nn.GroupNorm, nn.InstanceNorm2d, nn.MaxPool2d, nn.AvgPool2d]
 
     def __init__(self, source_code: str):
         self.source_code = source_code

@@ -171,25 +171,41 @@ def run_single_mutation(worker_args):
             if not location:
                 continue
 
+            mutation_type = details.get("mutation_type", "dimension")  # backward compatibility
             module = original_model.get_submodule(full_module_name)
             
-            if details.get('new_out') is not None:
-                arg_to_change = None
-                if isinstance(module, nn.Linear): arg_to_change = 'out_features'
-                elif isinstance(module, nn.Conv2d): arg_to_change = 'out_channels'
-                elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): arg_to_change = 'num_features'
+            if mutation_type == "dimension":
+                # Original dimension mutation logic
+                if details.get('new_out') is not None:
+                    arg_to_change = None
+                    if isinstance(module, nn.Linear): arg_to_change = 'out_features'
+                    elif isinstance(module, nn.Conv2d): arg_to_change = 'out_channels'
+                    elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): arg_to_change = 'num_features'
+                    
+                    if arg_to_change:
+                        code_mutator.schedule_modification(location, arg_to_change, details['new_out'])
                 
-                if arg_to_change:
-                    code_mutator.schedule_modification(location, arg_to_change, details['new_out'])
-            
-            if details.get('new_in') is not None:
-                arg_to_change = None
-                if isinstance(module, nn.Linear): arg_to_change = 'in_features'
-                elif isinstance(module, nn.Conv2d): arg_to_change = 'in_channels'
-                elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): arg_to_change = 'num_features'
+                if details.get('new_in') is not None:
+                    arg_to_change = None
+                    if isinstance(module, nn.Linear): arg_to_change = 'in_features'
+                    elif isinstance(module, nn.Conv2d): arg_to_change = 'in_channels'
+                    elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): arg_to_change = 'num_features'
 
-                if arg_to_change:
-                    code_mutator.schedule_modification(location, arg_to_change, details['new_in'])
+                    if arg_to_change:
+                        code_mutator.schedule_modification(location, arg_to_change, details['new_in'])
+            
+            elif mutation_type == "activation":
+                # Activation function mutation
+                new_activation = details.get('new_activation')
+                if new_activation:
+                    code_mutator.schedule_activation_modification(location, new_activation)
+            
+            elif mutation_type == "layer_type":
+                # Layer type mutation
+                new_layer_type = details.get('new_layer_type')
+                mutation_params = details.get('mutation_params', {})
+                if new_layer_type:
+                    code_mutator.schedule_layer_type_modification(location, new_layer_type, mutation_params)
 
         modified_code = code_mutator.get_modified_code()
         
