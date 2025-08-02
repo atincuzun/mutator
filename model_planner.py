@@ -20,12 +20,20 @@ class ModelPlanner:
         self.search_depth = search_depth
         self.source_map = source_map if source_map is not None else {}
         self.plan = {}
+        self.fx_compatible = True
+        
         try:
             self.graph_module = fx.symbolic_trace(self.original_model, concrete_args={'weights': None} if 'weights' in str(model.forward.__code__.co_varnames) else {})
             self.graph = self.graph_module.graph
             self.submodules = dict(self.original_model.named_modules())
         except Exception as e:
-            raise RuntimeError(f"Failed to symbolically trace the model: {e}")
+            # FX tracing failed - use fallback mode for ConvNeXT and similar models
+            self.fx_compatible = False
+            self.graph_module = None
+            self.graph = None
+            self.submodules = dict(self.original_model.named_modules())
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] FX tracing failed, using fallback mode: {e}")
 
         self.final_layer_name = None
         for name, module in reversed(list(self.original_model.named_modules())):
@@ -36,10 +44,28 @@ class ModelPlanner:
     def plan_random_mutation(self) -> dict:
         self.clear_plan()
         
-        # Choose mutation type based on configured weights
-        mutation_types = list(config.MUTATION_TYPE_WEIGHTS.keys())
-        weights = list(config.MUTATION_TYPE_WEIGHTS.values())
-        chosen_mutation_type = random.choices(mutation_types, weights=weights)[0]
+        # If FX tracing failed, use fallback mutation strategy
+        if not self.fx_compatible:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] Using fallback mutation strategy (FX incompatible)")
+            return self._plan_fallback_mutation()
+        
+        # Check if this is a ConvNeXT-style model by looking for characteristic modules
+        is_convnext_style = self._detect_convnext_architecture()
+        
+        if is_convnext_style:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] Detected ConvNeXT-style architecture, using compatible mutation strategy")
+            # For ConvNeXT models, focus on mutations that work well with FX tracing
+            # Prioritize dimension and activation mutations over problematic structural changes
+            safe_mutation_types = ['dimension', 'activation']
+            safe_weights = [0.6, 0.4]  # Higher weight on dimension mutations
+            chosen_mutation_type = random.choices(safe_mutation_types, weights=safe_weights)[0]
+        else:
+            # Choose mutation type based on configured weights for regular models
+            mutation_types = list(config.MUTATION_TYPE_WEIGHTS.keys())
+            weights = list(config.MUTATION_TYPE_WEIGHTS.values())
+            chosen_mutation_type = random.choices(mutation_types, weights=weights)[0]
         
         if chosen_mutation_type == 'dimension':
             return self._plan_dimension_mutation()
@@ -104,11 +130,19 @@ class ModelPlanner:
             if isinstance(module, self.ACTIVATION_MODULES):
                 module_type = type(module).__name__
                 if module_type in config.ACTIVATION_MUTATIONS:
-                    activation_candidates.append((name, module_type))
+                    # Check if this module has a valid source location
+                    if name in self.source_map:
+                        # When helper mutations are disabled, ensure this is a direct instantiation
+                        if not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+                            # Check if the source location represents a direct instantiation
+                            if self._is_direct_instantiation_location(name):
+                                activation_candidates.append((name, module_type))
+                        else:
+                            activation_candidates.append((name, module_type))
         
         if not activation_candidates:
             if config.DEBUG_MODE:
-                print("[ModelPlanner] No mutable activation functions found")
+                print(f"[ModelPlanner] No mutable activation functions found (helper_mutations={config.ALLOW_HELPER_FUNCTION_MUTATIONS})")
             return {}
         
         # Choose a random activation to mutate
@@ -140,11 +174,18 @@ class ModelPlanner:
         for name, module in self.original_model.named_modules():
             module_type = type(module).__name__
             if module_type in config.LAYER_TYPE_MUTATIONS:
-                layer_candidates.append((name, module_type, module))
+                # Check if this module has a valid source location
+                if name in self.source_map:
+                    # When helper mutations are disabled, ensure this is a direct instantiation
+                    if not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+                        if self._is_direct_instantiation_location(name):
+                            layer_candidates.append((name, module_type, module))
+                    else:
+                        layer_candidates.append((name, module_type, module))
         
         if not layer_candidates:
             if config.DEBUG_MODE:
-                print("[ModelPlanner] No mutable layer types found")
+                print(f"[ModelPlanner] No mutable layer types found (helper_mutations={config.ALLOW_HELPER_FUNCTION_MUTATIONS})")
             return {}
         
         # Choose a random layer to mutate
@@ -171,6 +212,207 @@ class ModelPlanner:
             import json
             print(json.dumps(self.plan, indent=2))
         return self.plan
+
+    def _is_fx_incompatible_module(self, module_name: str) -> bool:
+        """Check if a module is known to be incompatible with torch.fx tracing."""
+        module = self.submodules.get(module_name)
+        if module is None:
+            return False
+        
+        module_type = type(module).__name__
+        return module_type in config.FX_INCOMPATIBLE_MODULES
+    
+    def _get_fx_compatible_replacement(self, module_name: str) -> str:
+        """Get FX-compatible replacement for incompatible modules."""
+        module = self.submodules.get(module_name)
+        if module is None:
+            return None
+        
+        module_type = type(module).__name__
+        return config.FX_COMPATIBLE_REPLACEMENTS.get(module_type)
+    
+    def _plan_convnext_compatible_mutation(self) -> dict:
+        """Plan mutations specifically designed for ConvNeXT-style architectures."""
+        mutation_candidates = []
+        
+        # Find Conv2d layers that we can mutate (avoid FX-incompatible modules)
+        for name, module in self.original_model.named_modules():
+            if isinstance(module, nn.Conv2d):
+                # Skip if this module is in an FX-incompatible context
+                if not self._is_fx_incompatible_module(name):
+                    if name in self.source_map:
+                        mutation_candidates.append((name, module))
+        
+        if not mutation_candidates:
+            # Fallback to regular mutations for compatible modules
+            return self._plan_dimension_mutation()
+        
+        # Choose a Conv2d to mutate
+        target_name, target_module = random.choice(mutation_candidates)
+        
+        # ConvNeXT-specific mutations
+        mutation_type = random.choice(['kernel_size', 'groups'])
+        
+        if mutation_type == 'kernel_size' and hasattr(target_module, 'kernel_size'):
+            # Mutate kernel size (common in ConvNeXT depth-wise convs)
+            current_kernel = target_module.kernel_size[0] if isinstance(target_module.kernel_size, tuple) else target_module.kernel_size
+            new_kernels = [k for k in config.CONVNEXT_MUTATIONS['depthwise_conv']['kernel_sizes'] if k != current_kernel]
+            if new_kernels:
+                new_kernel = random.choice(new_kernels)
+                current_plan = {
+                    target_name: {
+                        "mutation_type": "convnext_kernel",
+                        "current_kernel_size": current_kernel,
+                        "new_kernel_size": new_kernel,
+                        "source_location": self.source_map.get(target_name)
+                    }
+                }
+                self.plan = current_plan
+                return self.plan
+        
+        # Fallback to dimension mutation
+        return self._plan_dimension_mutation()
+
+    def _detect_convnext_architecture(self) -> bool:
+        """Detect if this is a ConvNeXT-style architecture based on characteristic modules."""
+        # Look for characteristic ConvNeXT modules
+        convnext_indicators = [
+            'StochasticDepth', 'LayerNorm2d', 'Permute', 'CNBlock'
+        ]
+        
+        for name, module in self.original_model.named_modules():
+            module_type = type(module).__name__
+            if module_type in convnext_indicators:
+                return True
+            
+            # Also check for depth-wise convolutions (groups == in_channels)
+            if isinstance(module, nn.Conv2d) and hasattr(module, 'groups'):
+                if module.groups > 1 and module.groups == module.in_channels:
+                    return True
+        
+        return False
+
+    def _plan_fallback_mutation(self) -> dict:
+        """Plan mutations for FX-incompatible models using module inspection only."""
+        # Focus on simple, safe mutations that don't require FX graph analysis
+        mutation_candidates = []
+        
+        # Find mutable modules that we can safely mutate
+        for name, module in self.original_model.named_modules():
+            if name in self.source_map:
+                if isinstance(module, (nn.Conv2d, nn.Linear)):
+                    # These are safe to mutate and common in ConvNeXT
+                    mutation_candidates.append((name, module, 'dimension'))
+                elif isinstance(module, self.ACTIVATION_MODULES):
+                    # Activation functions are safe to mutate
+                    module_type = type(module).__name__
+                    if module_type in config.ACTIVATION_MUTATIONS:
+                        mutation_candidates.append((name, module, 'activation'))
+                elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)):
+                    # Normalization layers are relatively safe
+                    module_type = type(module).__name__
+                    if module_type in config.LAYER_TYPE_MUTATIONS:
+                        mutation_candidates.append((name, module, 'layer_type'))
+        
+        if not mutation_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No mutation candidates found in fallback mode")
+            return {}
+        
+        # Choose a random mutation
+        target_name, target_module, mutation_type = random.choice(mutation_candidates)
+        
+        if mutation_type == 'dimension':
+            return self._plan_fallback_dimension_mutation(target_name, target_module)
+        elif mutation_type == 'activation':
+            return self._plan_fallback_activation_mutation(target_name, target_module)
+        elif mutation_type == 'layer_type':
+            return self._plan_fallback_layer_type_mutation(target_name, target_module)
+        
+        return {}
+    
+    def _plan_fallback_dimension_mutation(self, target_name: str, target_module: nn.Module) -> dict:
+        """Plan dimension mutation without FX graph analysis."""
+        if isinstance(target_module, nn.Conv2d):
+            original_dim = target_module.out_channels
+        elif isinstance(target_module, nn.Linear):
+            original_dim = target_module.out_features
+        else:
+            return {}
+        
+        valid_new_sizes = [s for s in self.VALID_CHANNEL_SIZES if s != original_dim]
+        if not valid_new_sizes:
+            return {}
+        
+        new_dim = random.choice(valid_new_sizes)
+        
+        current_plan = {
+            target_name: {
+                "mutation_type": "dimension",
+                "new_out": new_dim,
+                "new_in": None,
+                "source_location": self.source_map.get(target_name)
+            }
+        }
+        
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated fallback dimension mutation plan for {target_name}")
+        return self.plan
+    
+    def _plan_fallback_activation_mutation(self, target_name: str, target_module: nn.Module) -> dict:
+        """Plan activation mutation without FX graph analysis."""
+        module_type = type(target_module).__name__
+        possible_mutations = config.ACTIVATION_MUTATIONS[module_type]
+        new_activation = random.choice(possible_mutations)
+        
+        current_plan = {
+            target_name: {
+                "mutation_type": "activation",
+                "current_activation": module_type,
+                "new_activation": new_activation,
+                "source_location": self.source_map.get(target_name)
+            }
+        }
+        
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated fallback activation mutation plan: {module_type} -> {new_activation}")
+        return self.plan
+    
+    def _plan_fallback_layer_type_mutation(self, target_name: str, target_module: nn.Module) -> dict:
+        """Plan layer type mutation without FX graph analysis."""
+        module_type = type(target_module).__name__
+        possible_mutations = config.LAYER_TYPE_MUTATIONS[module_type]
+        new_layer_type = random.choice(possible_mutations)
+        
+        # Extract relevant parameters for the mutation
+        mutation_params = self._extract_layer_params(target_module, module_type, new_layer_type)
+        
+        current_plan = {
+            target_name: {
+                "mutation_type": "layer_type",
+                "current_layer_type": module_type,
+                "new_layer_type": new_layer_type,
+                "mutation_params": mutation_params,
+                "source_location": self.source_map.get(target_name)
+            }
+        }
+        
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated fallback layer type mutation plan: {module_type} -> {new_layer_type}")
+        return self.plan
+
+    def _is_direct_instantiation_location(self, module_name: str) -> bool:
+        """Check if a module's source location represents a direct nn.Module instantiation."""
+        if module_name not in self.source_map:
+            return False
+        
+        # This is a simplified check - in a more sophisticated implementation,
+        # we would parse the AST at the source location to determine if it's a direct call
+        # For now, we assume all tracked locations are valid when helper mutations are disabled
+        return True
 
     def _extract_layer_params(self, module: nn.Module, current_type: str, new_type: str) -> dict:
         """Extract parameters needed for layer type mutation."""
@@ -368,6 +610,7 @@ class ModelPlanner:
                 new_module.weight.data.fill_(1); new_module.bias.data.zero_()
                 new_module.weight.data[:min_feats] = module.weight.data[:min_feats]; new_module.bias.data[:min_feats] = module.bias.data[:min_feats]
         return new_module
+    
     @staticmethod
     def get_model_checksum(model: nn.Module) -> str:
         try:
@@ -375,3 +618,24 @@ class ModelPlanner:
             else: graph_repr = fx.symbolic_trace(model).graph.print_tabular()
             return hashlib.sha256(graph_repr.encode()).hexdigest()
         except: return os.urandom(16).hex()
+    
+    @staticmethod
+    def get_model_parameter_checksum(model: nn.Module) -> str:
+        """Generate checksum based on model parameters for FX-incompatible models."""
+        try:
+            # Collect parameter shapes and names to create a structural signature
+            param_info = []
+            for name, param in model.named_parameters():
+                param_info.append(f"{name}:{param.shape}")
+            
+            # Also collect module types and names for additional structural info
+            module_info = []
+            for name, module in model.named_modules():
+                if len(name) > 0:  # Skip root module
+                    module_info.append(f"{name}:{type(module).__name__}")
+            
+            # Create combined signature
+            signature = "|".join(param_info) + "||" + "|".join(module_info)
+            return hashlib.sha256(signature.encode()).hexdigest()
+        except Exception:
+            return os.urandom(16).hex()

@@ -130,7 +130,15 @@ class CodeMutator(ast.NodeTransformer):
                         node.keywords.append(ast.keyword(arg='negative_slope', value=ast.Constant(value=0.01)))
                 
                 if config.DEBUG_MODE:
-                    print(f"  > Modified activation from {old_activation} to {mod['new_activation']}")
+                    print(f"  > Modified activation from {old_activation} to {new_activation_name}")
+                    if not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+                        print(f"  > Direct instantiation mode: only nn.Module calls mutated")
+            
+            # When helper mutations are disabled, don't mutate helper function calls
+            elif not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+                if config.DEBUG_MODE:
+                    func_name = getattr(node.func, 'id', 'unknown')
+                    print(f"  > Skipping potential helper function call: {func_name}")
 
     def _apply_layer_type_modification(self, node: ast.Call, mod: dict):
         """Apply layer type modifications."""
@@ -170,6 +178,14 @@ class CodeMutator(ast.NodeTransformer):
                 
                 if config.DEBUG_MODE:
                     print(f"  > Modified layer type from {old_layer_type} to {mod['new_layer_type']}")
+                    if not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+                        print(f"  > Direct instantiation mode: only nn.Module calls mutated")
+            
+            # When helper mutations are disabled, don't mutate helper function calls
+            elif not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+                if config.DEBUG_MODE:
+                    func_name = getattr(node.func, 'id', 'unknown')
+                    print(f"  > Skipping potential helper function call: {func_name}")
 
     def get_modified_code(self) -> str:
         if config.DEBUG_MODE:

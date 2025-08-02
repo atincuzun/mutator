@@ -64,16 +64,12 @@ class ModuleSourceTracer:
         """
         function_name = frame_info.function
         
-        # Common helper function name patterns
-        helper_patterns = [
-            'conv1x1', 'conv3x3', 'conv5x5', 'conv7x7',  # Convolution helpers
-            'make_layer', 'make_block', 'make_stage',      # Layer builders
-            'build_', 'create_', 'get_',                   # Factory functions
-            'downsample', 'upsample',                      # Sampling helpers
-        ]
+        # If helper function mutations are allowed, we don't need to filter them out
+        if config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+            return False
         
-        # Check if function name matches helper patterns
-        for pattern in helper_patterns:
+        # Check if function name matches helper patterns from config
+        for pattern in config.HELPER_FUNCTION_PATTERNS:
             if pattern in function_name.lower():
                 if config.DEBUG_MODE:
                     print(f"[SourceTracer] Detected helper function by name pattern: {function_name}")
@@ -109,6 +105,20 @@ class ModuleSourceTracer:
         
         return False
 
+    def _is_direct_instantiation_call(self, frame_info):
+        """
+        Check if a frame represents a direct nn.Module instantiation (not through helper).
+        """
+        try:
+            if frame_info.code_context:
+                code_line = frame_info.code_context[0].strip()
+                # Direct instantiation patterns
+                direct_patterns = ['nn.', 'torch.nn.']
+                return any(pattern in code_line for pattern in direct_patterns)
+        except (AttributeError, IndexError):
+            pass
+        return False
+
     @staticmethod
     def _make_patched_init(original_init):
         @wraps(original_init)
@@ -130,7 +140,7 @@ class ModuleSourceTracer:
                     for i in range(1, min(len(stack_frames), 10)):  # Limit search depth
                         frame_info = stack_frames[i]
                         
-                        # Skip if this frame is inside a helper function
+                        # Skip if this frame is inside a helper function (when helper mutations disabled)
                         if tracer._is_helper_function_frame(frame_info):
                             if config.DEBUG_MODE:
                                 print(f"[SourceTracer] Skipping helper function frame: {frame_info.function} at line {frame_info.lineno}")
@@ -142,7 +152,14 @@ class ModuleSourceTracer:
                                 print(f"[SourceTracer] Skipping non-init frame: {frame_info.function}")
                             continue
                         
-                        # This should be the actual call site (like self.conv1 = conv3x3(...))
+                        # When helper mutations are disabled, prefer direct instantiations
+                        if not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
+                            if not tracer._is_direct_instantiation_call(frame_info):
+                                if config.DEBUG_MODE:
+                                    print(f"[SourceTracer] Skipping indirect instantiation at line {frame_info.lineno}")
+                                continue
+                        
+                        # This should be the actual call site (like self.conv1 = conv3x3(...) or self.relu = nn.ReLU(...))
                         target_frame = frame_info
                         if config.DEBUG_MODE:
                             print(f"[SourceTracer] Found target frame: {frame_info.function} at line {frame_info.lineno}")

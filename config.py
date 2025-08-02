@@ -36,3 +36,41 @@ MUTATION_TYPE_WEIGHTS = {
     'activation': 0.4,     # 40% - activation function mutations  
     'layer_type': 0.2      # 20% - layer type mutations
 }
+
+# --- HELPER FUNCTION MUTATION CONTROL ---
+# Controls whether helper function calls (like conv3x3()) should be mutation targets
+# True: Mutate helper function calls (current behavior) - allows indirect mutations
+# False: Only mutate direct nn.Module instantiations - more semantically correct
+ALLOW_HELPER_FUNCTION_MUTATIONS = False
+
+# Helper function patterns to detect (used when ALLOW_HELPER_FUNCTION_MUTATIONS = False)
+HELPER_FUNCTION_PATTERNS = [
+    'conv1x1', 'conv3x3', 'conv5x5', 'conv7x7',      # Convolution helpers
+    'make_layer', 'make_block', 'make_stage',          # Layer builders  
+    'build_', 'create_', 'get_',                       # Factory functions
+    'downsample', 'upsample',                          # Sampling helpers
+]
+
+# --- CONVNEXT COMPATIBILITY SETTINGS ---
+# Modules that are problematic for torch.fx symbolic tracing
+FX_INCOMPATIBLE_MODULES = [
+    'StochasticDepth', 'LayerNorm2d', 'Permute'
+]
+
+# Alternative modules for FX-incompatible ones during mutation
+FX_COMPATIBLE_REPLACEMENTS = {
+    'StochasticDepth': 'Dropout',           # Replace with standard Dropout
+    'LayerNorm2d': 'BatchNorm2d',          # Replace with BatchNorm2d
+    'Permute': 'Identity',                 # Replace with Identity (no-op)
+}
+
+# ConvNeXT-specific mutation patterns
+CONVNEXT_MUTATIONS = {
+    # Depth-wise convolution mutations
+    'depthwise_conv': {
+        'kernel_sizes': [3, 5, 7],         # Alternative kernel sizes
+        'group_ratios': [1, 0.5, 1.0],     # groups=1 (standard), groups=dim//2, groups=dim
+    },
+    # MLP expansion ratios
+    'mlp_expansion': [2, 4, 6, 8],         # Alternative expansion ratios
+}
