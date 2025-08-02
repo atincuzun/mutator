@@ -1,0 +1,9 @@
+import multiprocessing
+
+DEBUG_MODE = False
+NUM_ATTEMPTS_PER_MODEL = 30
+PRODUCER_SEARCH_DEPTH = 10
+PLANS_OUTPUT_DIR = "mutation_plans"
+NUM_WORKERS = multiprocessing.cpu_count()
+MAX_CORES_TO_USE = 12
+VALID_CHANNEL_SIZES = [16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 256, 320, 512, 640, 768, 1024]
