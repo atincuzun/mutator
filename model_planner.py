@@ -75,6 +75,10 @@ class ModelPlanner:
             return self._plan_layer_type_mutation()
         elif chosen_mutation_type == 'architectural':
             return self._plan_architectural_mutation()
+        elif chosen_mutation_type == 'kernel_size':
+            return self._plan_kernel_size_mutation()
+        elif chosen_mutation_type == 'stride':
+            return self._plan_stride_mutation()
         else:
             return self._plan_dimension_mutation()  # fallback
 
@@ -213,6 +217,68 @@ class ModelPlanner:
             print(f"[ModelPlanner] Generated layer type mutation plan: {current_layer_type} -> {new_layer_type}")
             import json
             print(json.dumps(self.plan, indent=2))
+        return self.plan
+
+    def _plan_kernel_size_mutation(self) -> dict:
+        """Plan mutation of kernel sizes for Conv2d layers."""
+        conv2d_candidates = []
+        for name, module in self.original_model.named_modules():
+            if isinstance(module, nn.Conv2d) and name in self.source_map:
+                module_type = type(module).__name__
+                current_kernel = module.kernel_size[0] if isinstance(module.kernel_size, tuple) else module.kernel_size
+                if module_type in config.KERNEL_SIZE_MUTATIONS and current_kernel in config.KERNEL_SIZE_MUTATIONS[module_type]:
+                    conv2d_candidates.append((name, module, current_kernel))
+
+        if not conv2d_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No mutable Conv2d layers found for kernel size mutation.")
+            return {}
+
+        target_name, module, current_kernel = random.choice(conv2d_candidates)
+        possible_mutations = config.KERNEL_SIZE_MUTATIONS[type(module).__name__][current_kernel]
+        new_kernel = random.choice(possible_mutations)
+
+        current_plan = {
+            target_name: {
+                "mutation_type": "kernel_size",
+                "new_kernel_size": new_kernel,
+                "source_location": self.source_map.get(target_name)
+            }
+        }
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated kernel size mutation plan: {current_kernel} -> {new_kernel} for {target_name}")
+        return self.plan
+
+    def _plan_stride_mutation(self) -> dict:
+        """Plan mutation of strides for Conv2d layers."""
+        conv2d_candidates = []
+        for name, module in self.original_model.named_modules():
+            if isinstance(module, nn.Conv2d) and name in self.source_map:
+                module_type = type(module).__name__
+                current_stride = module.stride[0] if isinstance(module.stride, tuple) else module.stride
+                if module_type in config.STRIDE_MUTATIONS and current_stride in config.STRIDE_MUTATIONS[module_type]:
+                    conv2d_candidates.append((name, module, current_stride))
+
+        if not conv2d_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No mutable Conv2d layers found for stride mutation.")
+            return {}
+
+        target_name, module, current_stride = random.choice(conv2d_candidates)
+        possible_mutations = config.STRIDE_MUTATIONS[type(module).__name__][current_stride]
+        new_stride = random.choice(possible_mutations)
+
+        current_plan = {
+            target_name: {
+                "mutation_type": "stride",
+                "new_stride": new_stride,
+                "source_location": self.source_map.get(target_name)
+            }
+        }
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated stride mutation plan: {current_stride} -> {new_stride} for {target_name}")
         return self.plan
 
     def _plan_architectural_mutation(self) -> dict:

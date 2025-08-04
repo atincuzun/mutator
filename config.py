@@ -32,11 +32,38 @@ LAYER_TYPE_MUTATIONS = {
 
 # Mutation type weights (probability distribution)
 MUTATION_TYPE_WEIGHTS = {
-    'dimension': 0.3,       # 30% - existing dimension mutations
-    'activation': 0.3,      # 30% - activation function mutations  
-    'layer_type': 0.2,      # 20% - layer type mutations
-    'architectural': 0.2    # 20% - high-level architectural mutations
+    'dimension': 0.25,      # 25% - existing dimension mutations
+    'activation': 0.25,     # 25% - activation function mutations
+    'layer_type': 0.15,     # 15% - layer type mutations
+    'kernel_size': 0.15,    # 15% - kernel size mutations
+    'stride': 0.10,         # 10% - stride mutations
+    'architectural': 0.10   # 10% - high-level architectural mutations
 }
+
+# Kernel size mutations for Conv2d layers
+KERNEL_SIZE_MUTATIONS = {
+    'Conv2d': {
+        1: [3, 5],
+        3: [1, 5, 7],
+        5: [3, 7],
+        7: [3, 5, 9],
+        9: [7, 11],
+        11: [7, 9, 13]
+    }
+}
+
+# Stride mutations for Conv2d layers
+STRIDE_MUTATIONS = {
+    'Conv2d': {
+        1: [2],
+        2: [1, 3],
+        3: [2, 4],
+        4: [2, 3]
+    }
+}
+
+# Padding strategies
+PADDING_STRATEGIES = ['same', 'valid'] # 'custom' might be too complex for now
 
 # --- HELPER FUNCTION MUTATION CONTROL ---
 # Controls whether helper function calls (like conv3x3()) should be mutation targets

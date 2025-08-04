@@ -86,6 +86,30 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled architectural modification: {mod}")
 
+    def schedule_kernel_size_modification(self, location: dict, new_kernel_size: int):
+        """Schedule a kernel size modification."""
+        if location and new_kernel_size:
+            mod = {
+                'type': 'kernel_size',
+                'location': location,
+                'new_kernel_size': new_kernel_size
+            }
+            self.modifications.append(mod)
+            if config.DEBUG_MODE:
+                print(f"[CodeMutator] Scheduled kernel size modification: {mod}")
+
+    def schedule_stride_modification(self, location: dict, new_stride: int):
+        """Schedule a stride modification."""
+        if location and new_stride:
+            mod = {
+                'type': 'stride',
+                'location': location,
+                'new_stride': new_stride
+            }
+            self.modifications.append(mod)
+            if config.DEBUG_MODE:
+                print(f"[CodeMutator] Scheduled stride modification: {mod}")
+
     def visit_Call(self, node: ast.Call):
         self.generic_visit(node)
         
@@ -105,6 +129,10 @@ class CodeMutator(ast.NodeTransformer):
                     self._apply_layer_type_modification(node, mod)
                 elif mod['type'] == 'architectural':
                     self._apply_architectural_modification(node, mod)
+                elif mod['type'] == 'kernel_size':
+                    self._apply_kernel_size_modification(node, mod)
+                elif mod['type'] == 'stride':
+                    self._apply_stride_modification(node, mod)
 
         return node
 
@@ -174,6 +202,40 @@ class CodeMutator(ast.NodeTransformer):
 
         if not modified and config.DEBUG_MODE:
              print(f"  > WARNING: Could not find argument '{mod['arg_name']}' to modify at this location.")
+
+    def _apply_kernel_size_modification(self, node: ast.Call, mod: dict):
+        """Apply kernel size modifications."""
+        modified = False
+        for kw in node.keywords:
+            if kw.arg == 'kernel_size':
+                kw.value = ast.Constant(value=mod['new_kernel_size'])
+                modified = True
+                break
+        if not modified:
+            # Assuming kernel_size is the 2nd positional argument for Conv2d
+            if len(node.args) > 2:
+                node.args[2] = ast.Constant(value=mod['new_kernel_size'])
+                modified = True
+        
+        if modified and config.DEBUG_MODE:
+            print(f"  > Modified kernel_size to {mod['new_kernel_size']}")
+
+    def _apply_stride_modification(self, node: ast.Call, mod: dict):
+        """Apply stride modifications."""
+        modified = False
+        for kw in node.keywords:
+            if kw.arg == 'stride':
+                kw.value = ast.Constant(value=mod['new_stride'])
+                modified = True
+                break
+        if not modified:
+            # Assuming stride is the 3rd positional argument for Conv2d
+            if len(node.args) > 3:
+                node.args[3] = ast.Constant(value=mod['new_stride'])
+                modified = True
+
+        if modified and config.DEBUG_MODE:
+            print(f"  > Modified stride to {mod['new_stride']}")
 
     def _apply_activation_modification(self, node: ast.Call, mod: dict):
         """Apply activation function modifications."""

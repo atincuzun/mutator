@@ -467,6 +467,16 @@ def run_single_mutation(worker_args):
                 mutation_params = details.get('mutation_params', {})
                 if new_layer_type:
                     code_mutator.schedule_layer_type_modification(location, new_layer_type, mutation_params)
+            
+            elif mutation_type == "kernel_size":
+                new_kernel_size = details.get('new_kernel_size')
+                if new_kernel_size:
+                    code_mutator.schedule_kernel_size_modification(location, new_kernel_size)
+
+            elif mutation_type == "stride":
+                new_stride = details.get('new_stride')
+                if new_stride:
+                    code_mutator.schedule_stride_modification(location, new_stride)
 
         modified_code = code_mutator.get_modified_code()
         
