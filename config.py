@@ -1,7 +1,7 @@
 import multiprocessing
 
 DEBUG_MODE = True
-NUM_ATTEMPTS_PER_MODEL = 10
+NUM_ATTEMPTS_PER_MODEL = 30
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"
 NUM_WORKERS = multiprocessing.cpu_count()
@@ -32,9 +32,10 @@ LAYER_TYPE_MUTATIONS = {
 
 # Mutation type weights (probability distribution)
 MUTATION_TYPE_WEIGHTS = {
-    'dimension': 0.4,      # 40% - existing dimension mutations
-    'activation': 0.4,     # 40% - activation function mutations  
-    'layer_type': 0.2      # 20% - layer type mutations
+    'dimension': 0.3,       # 30% - existing dimension mutations
+    'activation': 0.3,      # 30% - activation function mutations  
+    'layer_type': 0.2,      # 20% - layer type mutations
+    'architectural': 0.2    # 20% - high-level architectural mutations
 }
 
 # --- HELPER FUNCTION MUTATION CONTROL ---
@@ -73,4 +74,34 @@ CONVNEXT_MUTATIONS = {
     },
     # MLP expansion ratios
     'mlp_expansion': [2, 4, 6, 8],         # Alternative expansion ratios
+}
+
+# --- ARCHITECTURAL MUTATION SETTINGS ---
+# Prioritize high-level architectural changes in Net class
+PRIORITIZE_ARCHITECTURAL_MUTATIONS = True
+
+# High-level architectural patterns to target
+ARCHITECTURAL_MUTATIONS = {
+    # ConvNeXT block configurations
+    'convnext_block_settings': {
+        # [input_channels, output_channels, num_layers] alternatives
+        'stage_configs': [
+            # Original: [96, 192, 3], [192, 384, 3], [384, 768, 9], [768, None, 3]
+            # Variant 1: Smaller model
+            [[64, 128, 2], [128, 256, 2], [256, 512, 6], [512, None, 2]],
+            # Variant 2: Different layer depths
+            [[96, 192, 2], [192, 384, 4], [384, 768, 12], [768, None, 2]],
+            # Variant 3: More stages
+            [[48, 96, 2], [96, 192, 3], [192, 384, 6], [384, 768, 6], [768, None, 3]],
+            # Variant 4: Wider channels
+            [[128, 256, 3], [256, 512, 3], [512, 1024, 9], [1024, None, 3]],
+        ]
+    },
+    # Fixed parameter mutations
+    'fixed_parameters': {
+        'stochastic_depth_prob': [0.05, 0.1, 0.15, 0.2],  # Alternative dropout rates
+        'layer_scale': [1e-6, 1e-5, 1e-4, 1e-7],          # Alternative layer scales
+        'kernel_sizes': [3, 4, 5, 6],                      # Alternative stem kernel sizes
+        'strides': [2, 4, 6],                              # Alternative stem strides
+    }
 }

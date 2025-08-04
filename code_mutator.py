@@ -2,6 +2,7 @@ import ast
 import config
 
 class CodeMutator(ast.NodeTransformer):
+    
     ARG_TO_POS_MAP = {
         'in_channels': 0, 'out_channels': 1,
         'in_features': 0, 'out_features': 1,
@@ -14,6 +15,25 @@ class CodeMutator(ast.NodeTransformer):
         self.modifications = []
         if config.DEBUG_MODE:
             print("[CodeMutator] Initialized.")
+
+    def _validate_conv_params(self, arg_name: str, new_value: int, node: ast.Call):
+        """Validate convolution parameters to prevent invalid depthwise config"""
+        current_params = {}
+        
+        # Collect current parameters
+        for kw in node.keywords:
+            current_params[kw.arg] = getattr(kw.value, 'value', None)
+        for i, arg in enumerate(node.args):
+            if i == 0: current_params['in_channels'] = getattr(arg, 'value', None)
+            if i == 1: current_params['out_channels'] = getattr(arg, 'value', None)
+            if i == 5: current_params['groups'] = getattr(arg, 'value', 1)
+        
+        # Handle depthwise convolution constraint
+        if (arg_name == 'out_channels' 
+                and current_params.get('groups', 1) == current_params.get('in_channels')
+                and new_value != current_params.get('in_channels')):
+            return {'groups': 1}  # Convert to standard convolution
+        return {}
 
     def schedule_modification(self, location: dict, arg_name: str, new_value):
         """Schedule a dimension-based modification (backward compatibility)."""
@@ -53,6 +73,19 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled layer type modification: {mod}")
 
+    def schedule_architectural_modification(self, location: dict, architectural_type: str, params: dict):
+        """Schedule an architectural modification for high-level network structure."""
+        if location and architectural_type:
+            mod = {
+                'type': 'architectural',
+                'location': location,
+                'architectural_type': architectural_type,
+                'params': params
+            }
+            self.modifications.append(mod)
+            if config.DEBUG_MODE:
+                print(f"[CodeMutator] Scheduled architectural modification: {mod}")
+
     def visit_Call(self, node: ast.Call):
         self.generic_visit(node)
         
@@ -70,12 +103,41 @@ class CodeMutator(ast.NodeTransformer):
                     self._apply_activation_modification(node, mod)
                 elif mod['type'] == 'layer_type':
                     self._apply_layer_type_modification(node, mod)
+                elif mod['type'] == 'architectural':
+                    self._apply_architectural_modification(node, mod)
 
         return node
 
+    def visit_List(self, node: ast.List):
+        """Visit List nodes to handle architectural mutations like block_setting."""
+        self.generic_visit(node)
+        
+        for mod in self.modifications:
+            if mod['type'] == 'architectural':
+                loc = mod['location']
+                if (hasattr(node, 'lineno') and node.lineno == loc['lineno'] and
+                        hasattr(node, 'col_offset') and node.col_offset == loc['col_offset']):
+                    
+                    if config.DEBUG_MODE:
+                        print(f"[CodeMutator] Found AST List node at Line {loc['lineno']}, Col {loc['col_offset']} for architectural modification.")
+                    
+                    self._apply_architectural_modification(node, mod)
+        
+        return node
+
     def _apply_dimension_modification(self, node: ast.Call, mod: dict):
-        """Apply dimension-based modifications (original logic)."""
+        """Apply dimension-based modifications with convolution validation"""
         modified = False
+        additional_changes = {}
+        
+        # Validate convolution parameters before modification
+        if mod['arg_name'] in ['in_channels', 'out_channels']:
+            if isinstance(node.func, ast.Attribute) and node.func.attr == 'Conv2d':
+                additional_changes = self._validate_conv_params(
+                    mod['arg_name'], mod['new_value'], node
+                )
+
+        # Apply primary modification
         for kw in node.keywords:
             if kw.arg == mod['arg_name']:
                 old_val = getattr(kw.value, 'value', 'some_variable')
@@ -93,6 +155,22 @@ class CodeMutator(ast.NodeTransformer):
                 if config.DEBUG_MODE:
                     print(f"  > Modified positional arg {pos_index} ('{mod['arg_name']}') from ~{old_val} to {mod['new_value']}.")
                 modified = True
+
+        # Apply additional changes (e.g., groups parameter)
+        for param, value in additional_changes.items():
+            param_found = False
+            for kw in node.keywords:
+                if kw.arg == param:
+                    kw.value = ast.Constant(value=value)
+                    param_found = True
+                    if config.DEBUG_MODE:
+                        print(f"  > Adjusted {param} to {value} for depthwise conv constraint")
+                    break
+            
+            if not param_found:
+                node.keywords.append(ast.keyword(arg=param, value=ast.Constant(value=value)))
+                if config.DEBUG_MODE:
+                    print(f"  > Added {param}={value} for depthwise conv constraint")
 
         if not modified and config.DEBUG_MODE:
              print(f"  > WARNING: Could not find argument '{mod['arg_name']}' to modify at this location.")
@@ -186,6 +264,91 @@ class CodeMutator(ast.NodeTransformer):
                 if config.DEBUG_MODE:
                     func_name = getattr(node.func, 'id', 'unknown')
                     print(f"  > Skipping potential helper function call: {func_name}")
+
+    def _apply_architectural_modification(self, node, mod: dict):
+        """Apply architectural modifications like changing block configurations."""
+        architectural_type = mod['architectural_type']
+        params = mod['params']
+        
+        if architectural_type == 'block_setting':
+            # Modify the block_setting list
+            if isinstance(node, ast.List):
+                # Replace the entire list with new configuration
+                new_configs = params.get('new_configs', [])
+                
+                # Create new AST nodes for the new configuration
+                new_elements = []
+                for config_tuple in new_configs:
+                    # Create CNBlockConfig(input_channels, out_channels, num_layers) call
+                    call_node = ast.Call(
+                        func=ast.Name(id='CNBlockConfig', ctx=ast.Load()),
+                        args=[
+                            ast.Constant(value=config_tuple[0]),  # input_channels
+                            ast.Constant(value=config_tuple[1]) if config_tuple[1] is not None else ast.Constant(value=None),  # out_channels
+                            ast.Constant(value=config_tuple[2])   # num_layers
+                        ],
+                        keywords=[]
+                    )
+                    new_elements.append(call_node)
+                
+                node.elts = new_elements
+                
+                if config.DEBUG_MODE:
+                    print(f"  > Modified block_setting configuration: {new_configs}")
+            
+            elif isinstance(node, ast.Call) and hasattr(node.func, 'id') and node.func.id == 'CNBlockConfig':
+                # Modify individual CNBlockConfig calls
+                if 'input_channels' in params:
+                    if len(node.args) > 0:
+                        node.args[0] = ast.Constant(value=params['input_channels'])
+                if 'out_channels' in params:
+                    if len(node.args) > 1:
+                        node.args[1] = ast.Constant(value=params['out_channels']) if params['out_channels'] is not None else ast.Constant(value=None)
+                if 'num_layers' in params:
+                    if len(node.args) > 2:
+                        node.args[2] = ast.Constant(value=params['num_layers'])
+                
+                if config.DEBUG_MODE:
+                    print(f"  > Modified CNBlockConfig: {params}")
+        
+        elif architectural_type == 'depth_multiplier':
+            # Apply depth multiplier to existing configurations
+            multiplier = params.get('multiplier', 1.0)
+            if isinstance(node, ast.List):
+                for element in node.elts:
+                    if (isinstance(element, ast.Call) and 
+                        hasattr(element.func, 'id') and 
+                        element.func.id == 'CNBlockConfig' and 
+                        len(element.args) > 2):
+                        # Multiply the num_layers (third argument)
+                        current_layers = element.args[2].value if hasattr(element.args[2], 'value') else 3
+                        new_layers = max(1, int(current_layers * multiplier))
+                        element.args[2] = ast.Constant(value=new_layers)
+                
+                if config.DEBUG_MODE:
+                    print(f"  > Applied depth multiplier {multiplier} to block configurations")
+        
+        elif architectural_type == 'width_multiplier':
+            # Apply width multiplier to channel dimensions
+            multiplier = params.get('multiplier', 1.0)
+            if isinstance(node, ast.List):
+                for element in node.elts:
+                    if (isinstance(element, ast.Call) and 
+                        hasattr(element.func, 'id') and 
+                        element.func.id == 'CNBlockConfig'):
+                        # Multiply input_channels and out_channels
+                        if len(element.args) > 0 and hasattr(element.args[0], 'value'):
+                            current_in = element.args[0].value
+                            new_in = max(1, int(current_in * multiplier))
+                            element.args[0] = ast.Constant(value=new_in)
+                        
+                        if len(element.args) > 1 and element.args[1].value is not None:
+                            current_out = element.args[1].value
+                            new_out = max(1, int(current_out * multiplier))
+                            element.args[1] = ast.Constant(value=new_out)
+                
+                if config.DEBUG_MODE:
+                    print(f"  > Applied width multiplier {multiplier} to channel dimensions")
 
     def get_modified_code(self) -> str:
         if config.DEBUG_MODE:

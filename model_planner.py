@@ -73,6 +73,8 @@ class ModelPlanner:
             return self._plan_activation_mutation()
         elif chosen_mutation_type == 'layer_type':
             return self._plan_layer_type_mutation()
+        elif chosen_mutation_type == 'architectural':
+            return self._plan_architectural_mutation()
         else:
             return self._plan_dimension_mutation()  # fallback
 
@@ -213,6 +215,96 @@ class ModelPlanner:
             print(json.dumps(self.plan, indent=2))
         return self.plan
 
+    def _plan_architectural_mutation(self) -> dict:
+        """Plan high-level architectural mutations for ConvNeXT-style models."""
+        # Check if this is a ConvNeXT-style model first
+        if not self._detect_convnext_architecture():
+            # Fall back to regular mutations for non-ConvNeXT models
+            return self._plan_dimension_mutation()
+        
+        # Look for high-level architectural patterns in the source map
+        architectural_candidates = []
+        
+        # Find patterns that match high-level architectural parameters
+        for name, location in self.source_map.items():
+            if location and 'lineno' in location:
+                # Look for common architectural patterns in Net.__init__
+                if any(pattern in name.lower() for pattern in [
+                    'block_setting', 'stage_configs', 'stochastic_depth_prob', 
+                    'layer_scale', 'kernel_size', 'stride'
+                ]):
+                    architectural_candidates.append((name, location))
+        
+        # If no high-level patterns found, look for fixed parameter assignments
+        if not architectural_candidates:
+            for name, module in self.original_model.named_modules():
+                if name in self.source_map and isinstance(module, (nn.Conv2d, nn.Linear)):
+                    # Target parameters that look like architectural choices
+                    if any(keyword in name for keyword in ['stem', 'downsample', 'classifier']):
+                        architectural_candidates.append((name, self.source_map[name]))
+        
+        if not architectural_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No architectural mutation candidates found, falling back to dimension mutation")
+            return self._plan_dimension_mutation()
+        
+        # Choose an architectural parameter to mutate
+        target_name, target_location = random.choice(architectural_candidates)
+        
+        # Determine the type of architectural mutation
+        mutation_type = self._determine_architectural_mutation_type(target_name)
+        
+        current_plan = {
+            target_name: {
+                "mutation_type": "architectural",
+                "architectural_type": mutation_type,
+                "source_location": target_location,
+                **self._get_architectural_mutation_params(mutation_type)
+            }
+        }
+        
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated architectural mutation plan: {mutation_type}")
+            import json
+            print(json.dumps(self.plan, indent=2))
+        return self.plan
+    
+    def _determine_architectural_mutation_type(self, target_name: str) -> str:
+        """Determine what type of architectural mutation to apply."""
+        name_lower = target_name.lower()
+        
+        if 'block_setting' in name_lower or 'stage' in name_lower:
+            return 'block_configuration'
+        elif 'stochastic_depth' in name_lower:
+            return 'stochastic_depth_prob'
+        elif 'layer_scale' in name_lower:
+            return 'layer_scale'
+        elif 'kernel' in name_lower and 'stem' in name_lower:
+            return 'stem_kernel_size'
+        elif 'stride' in name_lower and 'stem' in name_lower:
+            return 'stem_stride'
+        else:
+            return 'dimension'  # fallback to dimension mutation
+    
+    def _get_architectural_mutation_params(self, mutation_type: str) -> dict:
+        """Get parameters for architectural mutations."""
+        params = {}
+        
+        if mutation_type == 'block_configuration':
+            stage_configs = config.ARCHITECTURAL_MUTATIONS['convnext_block_settings']['stage_configs']
+            params['new_block_setting'] = random.choice(stage_configs)
+        elif mutation_type == 'stochastic_depth_prob':
+            params['new_value'] = random.choice(config.ARCHITECTURAL_MUTATIONS['fixed_parameters']['stochastic_depth_prob'])
+        elif mutation_type == 'layer_scale':
+            params['new_value'] = random.choice(config.ARCHITECTURAL_MUTATIONS['fixed_parameters']['layer_scale'])
+        elif mutation_type == 'stem_kernel_size':
+            params['new_value'] = random.choice(config.ARCHITECTURAL_MUTATIONS['fixed_parameters']['kernel_sizes'])
+        elif mutation_type == 'stem_stride':
+            params['new_value'] = random.choice(config.ARCHITECTURAL_MUTATIONS['fixed_parameters']['strides'])
+        
+        return params
+
     def _is_fx_incompatible_module(self, module_name: str) -> bool:
         """Check if a module is known to be incompatible with torch.fx tracing."""
         module = self.submodules.get(module_name)
@@ -322,6 +414,12 @@ class ModelPlanner:
         # Choose a random mutation
         target_name, target_module, mutation_type = random.choice(mutation_candidates)
         
+        # For ConvNeXT models, prioritize architectural mutations
+        if (config.PRIORITIZE_ARCHITECTURAL_MUTATIONS and 
+            self._detect_convnext_architecture() and 
+            random.random() < 0.3):  # 30% chance to force architectural mutation
+            return self._plan_fallback_architectural_mutation()
+        
         if mutation_type == 'dimension':
             return self._plan_fallback_dimension_mutation(target_name, target_module)
         elif mutation_type == 'activation':
@@ -402,6 +500,41 @@ class ModelPlanner:
         self.plan = current_plan
         if config.DEBUG_MODE:
             print(f"[ModelPlanner] Generated fallback layer type mutation plan: {module_type} -> {new_layer_type}")
+        return self.plan
+    
+    def _plan_fallback_architectural_mutation(self) -> dict:
+        """Plan architectural mutations in fallback mode (FX-incompatible models)."""
+        # Prioritize block_setting for ConvNeXT models, then other architectural parameters
+        mutation_options = [
+            ('block_setting', 'convnext_block_settings'),  # HIGH PRIORITY for ConvNeXT
+            ('stochastic_depth_prob', 'stochastic_depth_prob'),
+            ('layer_scale', 'layer_scale'),
+            ('stem_kernel_size', 'stem_kernel_size'),
+            ('stem_stride', 'stem_stride'),
+        ]
+        
+        # Prioritize block_setting for ConvNeXT models (70% chance)
+        if self._is_convnext_model() and random.random() < 0.7:
+            param_name, mutation_type = 'block_setting', 'convnext_block_settings'
+        else:
+            # Choose a random architectural mutation
+            param_name, mutation_type = random.choice(mutation_options)
+        
+        # Create a synthetic target since we're doing architectural mutations
+        synthetic_target = f"Net.__init__.{param_name}"
+        
+        current_plan = {
+            synthetic_target: {
+                "mutation_type": "architectural",
+                "architectural_type": mutation_type,
+                "source_location": None,  # Will be resolved during code mutation
+                **self._get_architectural_mutation_params(mutation_type)
+            }
+        }
+        
+        self.plan = current_plan
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated fallback architectural mutation plan: {mutation_type}")
         return self.plan
 
     def _is_direct_instantiation_location(self, module_name: str) -> bool:
