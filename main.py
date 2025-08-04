@@ -418,16 +418,13 @@ def run_single_mutation(worker_args):
             # Model is FX-compatible, use normal FX workflow
             mutated_graph_module = fx.symbolic_trace(mutated_model); mutated_graph_module.recompile()
             mutated_graph_module(torch.randn(2, 3, 224, 224))
-            checksum = ModelPlanner.get_model_checksum(mutated_graph_module)
         else:
-            # Model is FX-incompatible, test directly and use alternative checksum
+            # Model is FX-incompatible, test directly
             mutated_model.eval()
             with torch.no_grad():
                 test_input = torch.randn(2, 3, 224, 224)
                 output = mutated_model(test_input)
-            # Generate checksum from model parameters instead of FX graph
-            checksum = ModelPlanner.get_model_parameter_checksum(mutated_model)
-
+        
         code_mutator = CodeMutator(model_source)
         
         for full_module_name, details in plan.items():
@@ -472,6 +469,10 @@ def run_single_mutation(worker_args):
                     code_mutator.schedule_layer_type_modification(location, new_layer_type, mutation_params)
 
         modified_code = code_mutator.get_modified_code()
+        
+        # Generate consistent hash from the mutated code itself
+        import hashlib
+        checksum = hashlib.md5(modified_code.encode('utf-8')).hexdigest()
         
         output_dir = os.path.join(config.PLANS_OUTPUT_DIR, model_name, "mutated_code")
         os.makedirs(output_dir, exist_ok=True)
