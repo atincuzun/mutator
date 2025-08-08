@@ -276,6 +276,37 @@ def run_single_mutation(worker_args):
         with open(model_path, 'w') as f:
             f.write(modified_code)
         
+        # Optionally save mutated model to LEMUR DB (nn-dataset)
+        if getattr(config, 'SAVE_MUTATED_TO_DB', False):
+            try:
+                # Build DB params: start from discovered/supported prm if possible
+                db_prm = {}
+                # Merge required training params from config
+                db_prm.update(getattr(config, 'DB_TRAIN_PRM', {}))
+                # Ensure minimal required keys exist
+                required_keys = {'batch', 'epoch', 'transform'}
+                missing = [k for k in required_keys if k not in db_prm]
+                if missing:
+                    raise ValueError(f"Missing required DB training params: {missing}. Set config.DB_TRAIN_PRM.")
+                # Call nn-dataset to train-eval and save
+                model_name, acc, a2t, code_score = nn_dataset.check_nn(
+                    modified_code,
+                    task=getattr(config, 'DB_TASK', None),
+                    dataset=getattr(config, 'DB_DATASET', None),
+                    metric=getattr(config, 'DB_METRIC', None),
+                    prm=db_prm,
+                    save_to_db=True,
+                    prefix=getattr(config, 'DB_MODEL_PREFIX', 'mutated'),
+                    save_path=None,
+                    export_onnx=False,
+                    epoch_limit_minutes=getattr(config, 'DB_EPOCH_LIMIT_MINUTES', 10)
+                )
+                if config.DEBUG_MODE:
+                    print(f"  -> Saved to DB as: {model_name} (acc={acc:.4f})")
+            except Exception as e:
+                if config.DEBUG_MODE:
+                    print(f"[WARN] Failed to save mutated model to DB: {e}")
+        
         return 'success', {"path": model_path, "checksum": checksum}
 
     except Exception as e:

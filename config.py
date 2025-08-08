@@ -20,6 +20,26 @@ MUTATED_MODELS_OUTPUT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), 'nn-dataset', 'mutated_models')
 )
 
+# --- OPTIONAL: SAVE MUTATED MODELS TO LEMUR DB ---
+# Toggle DB saving for each successfully generated mutated model
+SAVE_MUTATED_TO_DB = False
+# Required identifiers when saving to DB (set these to match your dataset)
+DB_TASK = None          # e.g., 'img-classification'
+DB_DATASET = None       # e.g., 'CIFAR10'
+DB_METRIC = None        # e.g., 'acc'
+# A prefix added to model name before uuid hash, resulting name: f"{prefix}-{uuid4(nn_code)}"
+DB_MODEL_PREFIX = "mutated"
+# Minimal training parameters required by nn-dataset during check_nn/train_new
+# Ensure 'batch', 'epoch', and 'transform' are provided and valid for your dataset
+DB_TRAIN_PRM = {
+    # 'batch': 64,
+    # 'epoch': 1,
+    # 'transform': 'CIFAR10-Default',
+    # 'num_workers': 2,
+}
+# Optional: cap per-epoch runtime during DB check (minutes)
+DB_EPOCH_LIMIT_MINUTES = 10
+
 # --- MUTATION TYPE CONFIGURATIONS ---
 # Activation function mutation mappings
 ACTIVATION_MUTATIONS = {
