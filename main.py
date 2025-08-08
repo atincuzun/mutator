@@ -50,20 +50,86 @@ DEFAULT_PRM = {
     'dropout': 0.5
 }
 
+# Common safe defaults to fill supported hyperparameters when nn-dataset prm is unavailable
+COMMON_PRM_DEFAULTS = {
+    'lr': 0.01,
+    'momentum': 0.9,
+    'weight_decay': 5e-4,
+    'dropout': 0.5,
+    'betas': (0.9, 0.999),
+    'eps': 1e-8,
+    'alpha': 0.99,
+}
+
 def load_lemur_model(model_source: str):
-    """Load LEMUR model with proper parameters"""
+    """Load LEMUR model with proper parameters.
+    - Prefer prm from LEMUR dataset for this exact code (best-accuracy row).
+    - Filter prm to the model's supported_hyperparameters() if provided.
+    - Fallback to safe defaults for any supported keys not present.
+    """
     constructor = load_constructor_from_string_via_file(model_source)
     
     # LEMUR models require specific parameters
     sig = inspect.signature(constructor)
     params = {}
+
+    # Discover the module that owns the constructor to query supported_hyperparameters()
+    supported_params = None
+    try:
+        model_module = importlib.import_module(constructor.__module__)
+        if hasattr(model_module, 'supported_hyperparameters'):
+            maybe_supported = model_module.supported_hyperparameters()
+            if isinstance(maybe_supported, (set, list, tuple)):
+                supported_params = set(maybe_supported)
+        # Also check class-level attribute for completeness
+        if supported_params is None and hasattr(constructor, 'supported_hyperparameters'):
+            maybe_supported = constructor.supported_hyperparameters()
+            if isinstance(maybe_supported, (set, list, tuple)):
+                supported_params = set(maybe_supported)
+    except Exception:
+        supported_params = None
+
+    # Try to get prm from nn-dataset for this exact code
+    dataset_prm = None
+    try:
+        df = nn_dataset.data(only_best_accuracy=False)
+        rows = df[df['nn_code'] == model_source]
+        if not rows.empty:
+            best_row = rows.loc[rows['accuracy'].idxmax()]
+            dataset_prm = best_row.get('prm', None)
+    except Exception:
+        dataset_prm = None
     
     if "in_shape" in sig.parameters:
         params["in_shape"] = DEFAULT_IN_SHAPE
     if "out_shape" in sig.parameters:
         params["out_shape"] = DEFAULT_OUT_SHAPE
     if "prm" in sig.parameters:
-        params["prm"] = DEFAULT_PRM
+        # Start from dataset prm when available
+        if isinstance(dataset_prm, dict) and dataset_prm:
+            if supported_params:
+                prm = {k: v for k, v in dataset_prm.items() if k in supported_params}
+                # Fill any missing supported keys with safe defaults
+                for k in supported_params:
+                    if k not in prm and (k in COMMON_PRM_DEFAULTS or k in DEFAULT_PRM):
+                        prm[k] = COMMON_PRM_DEFAULTS.get(k, DEFAULT_PRM.get(k))
+            else:
+                prm = dataset_prm
+        else:
+            # Build from supported set if present, otherwise fall back to legacy DEFAULT_PRM
+            if supported_params:
+                prm = {}
+                for k in supported_params:
+                    if k in COMMON_PRM_DEFAULTS:
+                        prm[k] = COMMON_PRM_DEFAULTS[k]
+                    elif k in DEFAULT_PRM:
+                        prm[k] = DEFAULT_PRM[k]
+                # If nothing matched, don't pass empty dict; use DEFAULT_PRM
+                if not prm:
+                    prm = DEFAULT_PRM
+            else:
+                prm = DEFAULT_PRM
+        params["prm"] = prm
     if "device" in sig.parameters:
         params["device"] = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
@@ -200,7 +266,8 @@ def run_single_mutation(worker_args):
         
         # Save to nn-dataset repository
         checksum = hashlib.md5(modified_code.encode('utf-8')).hexdigest()
-        model_dir = os.path.join("nn-dataset", "mutated_models", model_name)
+        # Use configurable output root from config
+        model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
         os.makedirs(model_dir, exist_ok=True)
         model_path = os.path.join(model_dir, f"mutated_{checksum}.py")
         
@@ -224,13 +291,21 @@ if __name__ == "__main__":
     try:
         # Fetch ALL models from LEMUR database
         data = nn_dataset.data(only_best_accuracy=False)
-        model_names = data['nn'].unique().tolist()
-        print(f"Found {len(model_names)} models in LEMUR database")
+        all_model_names = data['nn'].unique().tolist()
+        print(f"Found {len(all_model_names)} total models in LEMUR database")
         
-        # Filter models based on config
+        # Filter to only BASE models (exclude generated variants with UUIDs)
+        import re
+        uuid_pattern = re.compile(r'-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+        base_model_names = [name for name in all_model_names if not uuid_pattern.search(name)]
+        print(f"Filtered to {len(base_model_names)} base models (excluding UUID variants)")
+        
+        # Further filter models based on config if specified
         if config.SPECIFIC_MODELS:
-            model_names = [name for name in model_names if name in config.SPECIFIC_MODELS]
-            print(f"Filtered to {len(model_names)} specific models")
+            model_names = [name for name in base_model_names if name in config.SPECIFIC_MODELS]
+            print(f"Further filtered to {len(model_names)} specific models from config")
+        else:
+            model_names = base_model_names
         
         model_sources = {}
         empty_models = []

@@ -1,15 +1,24 @@
 import multiprocessing
+import os
 
 # List of specific models to mutate (leave empty to mutate all)
 SPECIFIC_MODELS = []
 
 DEBUG_MODE = True
-NUM_ATTEMPTS_PER_MODEL = 10
+NUM_ATTEMPTS_PER_MODEL = 1
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"
 NUM_WORKERS = multiprocessing.cpu_count()
 MAX_CORES_TO_USE = 12
 VALID_CHANNEL_SIZES = [16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 256, 320, 512, 640, 768, 1024]
+
+# Root folder where mutated models are written (can be changed by the user)
+# Default: within this repository under mutator/nn-dataset/mutated_models
+# To write into the top-level nn-dataset repo instead, set this to, e.g.:
+#   os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'nn-dataset', 'mutated_models'))
+MUTATED_MODELS_OUTPUT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), 'nn-dataset', 'mutated_models')
+)
 
 # --- MUTATION TYPE CONFIGURATIONS ---
 # Activation function mutation mappings
