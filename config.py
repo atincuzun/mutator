@@ -1,7 +1,10 @@
 import multiprocessing
 
+# List of specific models to mutate (leave empty to mutate all)
+SPECIFIC_MODELS = []
+
 DEBUG_MODE = True
-NUM_ATTEMPTS_PER_MODEL = 30
+NUM_ATTEMPTS_PER_MODEL = 10
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"
 NUM_WORKERS = multiprocessing.cpu_count()
