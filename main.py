@@ -16,6 +16,7 @@ import hashlib
 
 # Import LEMUR API
 import ab.nn.api as nn_dataset
+from ab.nn.util.Util import uuid4  # use canonical hashing
 
 import config
 from utils import save_plan_to_file, ModuleSourceTracer
@@ -265,7 +266,8 @@ def run_single_mutation(worker_args):
         modified_code = code_mutator.get_modified_code()
         
         # Save to nn-dataset repository
-        checksum = hashlib.md5(modified_code.encode('utf-8')).hexdigest()
+        # Use nn-dataset hashing (whitespace-insensitive) for consistency
+        checksum = uuid4(modified_code)
         # Use configurable output root from config
         model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
         os.makedirs(model_dir, exist_ok=True)
