@@ -4,7 +4,7 @@ import os
 # List of specific models to mutate (leave empty to mutate all)
 SPECIFIC_MODELS = []
 
-DEBUG_MODE = True
+DEBUG_MODE = False
 NUM_ATTEMPTS_PER_MODEL = 1
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"

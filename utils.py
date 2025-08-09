@@ -209,6 +209,19 @@ class ModuleSourceTracer:
                 self.source_map[name] = module._source_location
                 if config.DEBUG_MODE: print(f"  - Found location for '{name}': {module._source_location}")
                 del module._source_location
+        # Heuristic: fill missing ModuleList/Sequential children (e.g., comprehension produced)
+        for name, module in model.named_modules():
+            if name in self.source_map:
+                continue
+            if any(seg.isdigit() for seg in name.split('.')):  # indexed child e.g. layers.0
+                parent = '.'.join(name.split('.')[:-1])
+                if parent in self.source_map:
+                    # Inherit parent's location but annotate index
+                    loc = dict(self.source_map[parent])
+                    loc['derived_index'] = name.split('.')[-1]
+                    self.source_map[name] = loc
+                    if config.DEBUG_MODE:
+                        print(f"  - Approximated location for '{name}' from parent '{parent}'")
         return self.source_map
 
 def save_plan_to_file(model_name: str, status: str, plan: dict, details: dict):

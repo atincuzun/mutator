@@ -74,7 +74,12 @@ class ModelPlanner:
         elif chosen_mutation_type == 'layer_type':
             return self._plan_layer_type_mutation()
         elif chosen_mutation_type == 'architectural':
-            return self._plan_architectural_mutation()
+            plan = self._plan_architectural_mutation()
+            # Demote if architectural not applicable
+            if plan and all(v.get('mutation_type') != 'architectural' for v in plan.values()):
+                if config.DEBUG_MODE:
+                    print('[ModelPlanner] Architectural demoted to dimension fallback.')
+            return plan
         elif chosen_mutation_type == 'kernel_size':
             return self._plan_kernel_size_mutation()
         elif chosen_mutation_type == 'stride':
@@ -751,9 +756,17 @@ class ModelPlanner:
                 visited.add(user)
                 is_consumer = user.op == 'call_module' and isinstance(self.submodules.get(user.target), (nn.Conv2d, nn.Linear))
                 is_propagator = user.op == 'call_module' and isinstance(self.submodules.get(user.target), (nn.BatchNorm2d, nn.LayerNorm))
-                if is_consumer: consumers.add(user)
-                elif is_propagator: propagators.add(user); worklist.append(user)
-                else: worklist.append(user)
+                # NEW: handle torch.cat / aten.cat concat consumers
+                is_cat = user.op == 'call_function' and getattr(user.target, '__name__', '') == 'cat'
+                if is_consumer:
+                    consumers.add(user)
+                elif is_propagator:
+                    propagators.add(user); worklist.append(user)
+                elif is_cat:
+                    # treat cat outputs as needing consistent channels; propagate further
+                    worklist.append(user)
+                else:
+                    worklist.append(user)
         return list(consumers), list(propagators)
 
     def _find_nearby_producer_node(self, start_node: fx.Node) -> fx.Node | None:

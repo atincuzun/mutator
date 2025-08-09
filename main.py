@@ -44,7 +44,7 @@ def fetch_model_from_lemur(model_name):
 
 # Default parameters for LEMUR models
 DEFAULT_IN_SHAPE = (1, 3, 224, 224)  # (batch, channels, height, width)
-DEFAULT_OUT_SHAPE = (1000,)  # Output shape for classification
+DEFAULT_OUT_SHAPE = (1000,)  # Output shape for classification (fallback)
 DEFAULT_PRM = {
     'lr': 0.01,
     'momentum': 0.9,
@@ -154,6 +154,20 @@ def load_constructor_from_string_via_file(code_string: str):
 
 def run_single_mutation(worker_args):
     model_name, model_source = worker_args
+    # Determine dynamic out_shape if DB config provided
+    dynamic_out_shape = None
+    if getattr(config, 'DB_TASK', None) and getattr(config, 'DB_DATASET', None) and getattr(config, 'DB_METRIC', None):
+        try:
+            df = nn_dataset.data(only_best_accuracy=True, task=config.DB_TASK, dataset=config.DB_DATASET, metric=config.DB_METRIC)
+            # pick any row and read out_shape if present in prm or infer from nn_code by quick import later
+            if not df.empty:
+                # Some rows may encode class_number in prm or transform; attempt extraction
+                sample_prm = df.iloc[0].get('prm', {}) or {}
+                cls_candidates = [sample_prm.get('num_classes'), sample_prm.get('classes'), sample_prm.get('n_classes')]
+                cls = next((c for c in cls_candidates if isinstance(c, int) and c > 1), None)
+                if cls: dynamic_out_shape = (cls,)
+        except Exception:
+            dynamic_out_shape = None
     plan, original_model = {}, None
     try:
         if not isinstance(model_source, str):
@@ -163,6 +177,9 @@ def run_single_mutation(worker_args):
         with ModuleSourceTracer(model_source) as tracer:
             original_model = load_lemur_model(model_source)
         source_map = tracer.create_source_map(original_model)
+
+        # Override fallback OUT shape if dynamic detected
+        current_out_shape = dynamic_out_shape if dynamic_out_shape else DEFAULT_OUT_SHAPE
 
         planner = ModelPlanner(original_model, source_map=source_map, search_depth=config.PRODUCER_SEARCH_DEPTH)
         plan = planner.plan_random_mutation()
@@ -186,7 +203,7 @@ def run_single_mutation(worker_args):
                     output = mutated_model(test_input)
                 
                 # Check output shape
-                if output.shape[0] != 2 or output.shape[1] != DEFAULT_OUT_SHAPE[0]:
+                if output.shape[0] != 2 or output.shape[1] != current_out_shape[0]:
                     raise RuntimeError(f"Output shape {output.shape} not as expected for input {h}x{w}")
                 
                 # Backward pass test
