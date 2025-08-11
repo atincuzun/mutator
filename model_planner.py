@@ -14,13 +14,15 @@ class ModelPlanner:
     ACTIVATION_MODULES = (nn.ReLU, nn.GELU, nn.ELU, nn.LeakyReLU, nn.Tanh, nn.Sigmoid, nn.SiLU)
     NORMALIZATION_MODULES = (nn.BatchNorm2d, nn.GroupNorm, nn.LayerNorm, nn.InstanceNorm2d)
     POOLING_MODULES = (nn.MaxPool2d, nn.AvgPool2d, nn.AdaptiveMaxPool2d, nn.AdaptiveAvgPool2d)
-
+    
     def __init__(self, model: nn.Module, source_map: dict = None, search_depth: int = 3):
         self.original_model = model
         self.search_depth = search_depth
         self.source_map = source_map if source_map is not None else {}
         self.plan = {}
         self.fx_compatible = True
+        self.spatial_tracker = {}  # Track spatial dimensions: {module_name: (height, width)}
+        self.input_shape = (3, 224, 224)  # Default input shape (C, H, W)
         
         try:
             self.graph_module = fx.symbolic_trace(self.original_model, concrete_args={'weights': None} if 'weights' in str(model.forward.__code__.co_varnames) else {})
@@ -43,6 +45,9 @@ class ModelPlanner:
 
     def plan_random_mutation(self) -> dict:
         self.clear_plan()
+        
+        # Compute spatial dimensions before planning any mutations
+        self._compute_spatial_dimensions()
         
         # If FX tracing failed, use fallback mutation strategy
         if not self.fx_compatible:
@@ -83,20 +88,52 @@ class ModelPlanner:
             return self._plan_dimension_mutation()  # fallback
 
     def _plan_dimension_mutation(self) -> dict:
-        """Original dimension mutation logic."""
+        """Dimension mutation with spatial validation."""
         mutation_groups = self._build_mutation_groups()
         if not mutation_groups:
             return {}
 
-        mutation_group = random.choice(mutation_groups)
-        original_dim_module = self.submodules[mutation_group[0].target]
-        original_dim = original_dim_module.out_channels if isinstance(original_dim_module, nn.Conv2d) else original_dim_module.out_features
+        # Compute spatial dimensions if not already done
+        if not self.spatial_tracker:
+            self._compute_spatial_dimensions()
 
-        valid_new_sizes = [s for s in self.VALID_CHANNEL_SIZES if s != original_dim]
-        if not valid_new_sizes:
+        # Find a valid mutation group
+        valid_mutation_group = None
+        new_dim = None
+        
+        # Try up to 5 times to find a valid mutation
+        for _ in range(5):
+            mutation_group = random.choice(mutation_groups)
+            original_dim_module = self.submodules[mutation_group[0].target]
+            original_dim = original_dim_module.out_channels if isinstance(original_dim_module, nn.Conv2d) else original_dim_module.out_features
+
+            valid_new_sizes = [s for s in self.VALID_CHANNEL_SIZES if s != original_dim]
+            if not valid_new_sizes:
+                continue
+                
+            new_dim = random.choice(valid_new_sizes)
+            
+            # Validate that this mutation won't break downstream layers
+            consumers, propagators = self._find_downstream_dependencies(mutation_group)
+            
+            # Check if all consumers can accept the new dimension
+            valid = True
+            for consumer_node in consumers:
+                module = self.submodules.get(consumer_node.target)
+                if isinstance(module, nn.Conv2d) and new_dim % module.groups != 0:
+                    valid = False
+                    break
+                    
+            if valid:
+                valid_mutation_group = mutation_group
+                break
+        
+        if not valid_mutation_group:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] Could not find valid dimension mutation after 5 attempts")
             return {}
-        new_dim = random.choice(valid_new_sizes)
-
+            
+        mutation_group = valid_mutation_group
         consumers, propagators = self._find_downstream_dependencies(mutation_group)
         current_plan = {}
         
@@ -220,7 +257,7 @@ class ModelPlanner:
         return self.plan
 
     def _plan_kernel_size_mutation(self) -> dict:
-        """Plan mutation of kernel sizes for Conv2d layers."""
+        """Plan mutation of kernel sizes for Conv2d layers with spatial validation."""
         conv2d_candidates = []
         for name, module in self.original_model.named_modules():
             if isinstance(module, nn.Conv2d) and name in self.source_map:
@@ -234,9 +271,24 @@ class ModelPlanner:
                 print("[ModelPlanner] No mutable Conv2d layers found for kernel size mutation.")
             return {}
 
-        target_name, module, current_kernel = random.choice(conv2d_candidates)
-        possible_mutations = config.KERNEL_SIZE_MUTATIONS[type(module).__name__][current_kernel]
-        new_kernel = random.choice(possible_mutations)
+        # Compute spatial dimensions if not already done
+        if not self.spatial_tracker:
+            self._compute_spatial_dimensions()
+
+        valid_candidates = []
+        for name, module, current_kernel in conv2d_candidates:
+            possible_mutations = config.KERNEL_SIZE_MUTATIONS[type(module).__name__][current_kernel]
+            for new_kernel in possible_mutations:
+                # Validate the kernel size maintains valid dimensions
+                if self._validate_spatial_change(name, {'kernel_size': new_kernel}):
+                    valid_candidates.append((name, module, current_kernel, new_kernel))
+        
+        if not valid_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No valid kernel size mutations after spatial validation")
+            return {}
+            
+        target_name, module, current_kernel, new_kernel = random.choice(valid_candidates)
 
         current_plan = {
             target_name: {
@@ -251,7 +303,7 @@ class ModelPlanner:
         return self.plan
 
     def _plan_stride_mutation(self) -> dict:
-        """Plan mutation of strides for Conv2d layers."""
+        """Plan mutation of strides for Conv2d layers with spatial validation."""
         conv2d_candidates = []
         for name, module in self.original_model.named_modules():
             if isinstance(module, nn.Conv2d) and name in self.source_map:
@@ -265,9 +317,24 @@ class ModelPlanner:
                 print("[ModelPlanner] No mutable Conv2d layers found for stride mutation.")
             return {}
 
-        target_name, module, current_stride = random.choice(conv2d_candidates)
-        possible_mutations = config.STRIDE_MUTATIONS[type(module).__name__][current_stride]
-        new_stride = random.choice(possible_mutations)
+        # Compute spatial dimensions if not already done
+        if not self.spatial_tracker:
+            self._compute_spatial_dimensions()
+
+        valid_candidates = []
+        for name, module, current_stride in conv2d_candidates:
+            possible_mutations = config.STRIDE_MUTATIONS[type(module).__name__][current_stride]
+            for new_stride in possible_mutations:
+                # Validate the stride maintains valid dimensions
+                if self._validate_spatial_change(name, {'stride': new_stride}):
+                    valid_candidates.append((name, module, current_stride, new_stride))
+        
+        if not valid_candidates:
+            if config.DEBUG_MODE:
+                print("[ModelPlanner] No valid stride mutations after spatial validation")
+            return {}
+            
+        target_name, module, current_stride, new_stride = random.choice(valid_candidates)
 
         current_plan = {
             target_name: {
@@ -613,6 +680,55 @@ class ModelPlanner:
         # For now, we assume all tracked locations are valid when helper mutations are disabled
         return True
 
+    def _validate_spatial_change(self, module_name, new_params):
+        """Validate if mutation maintains valid spatial dimensions"""
+        if module_name not in self.spatial_tracker:
+            return True  # Skip validation if no dimension info
+        
+        current_h, current_w = self.spatial_tracker[module_name]
+        input_h, input_w = current_h, current_w
+        
+        # Compute new dimensions based on mutation type
+        if 'kernel_size' in new_params:
+            kernel_size = new_params['kernel_size']
+            stride = new_params.get('stride', self.submodules[module_name].stride)
+            padding = new_params.get('padding', self.submodules[module_name].padding)
+            dilation = new_params.get('dilation', self.submodules[module_name].dilation)
+            
+            if isinstance(kernel_size, int):
+                kernel_size = (kernel_size, kernel_size)
+            if isinstance(stride, int):
+                stride = (stride, stride)
+            if isinstance(padding, int):
+                padding = (padding, padding)
+            if isinstance(dilation, int):
+                dilation = (dilation, dilation)
+                
+            new_h = (input_h + 2*padding[0] - dilation[0]*(kernel_size[0]-1) - 1) // stride[0] + 1
+            new_w = (input_w + 2*padding[1] - dilation[1]*(kernel_size[1]-1) - 1) // stride[1] + 1
+        elif 'stride' in new_params:
+            stride = new_params['stride']
+            kernel_size = new_params.get('kernel_size', self.submodules[module_name].kernel_size)
+            padding = new_params.get('padding', self.submodules[module_name].padding)
+            dilation = new_params.get('dilation', self.submodules[module_name].dilation)
+            
+            if isinstance(kernel_size, int):
+                kernel_size = (kernel_size, kernel_size)
+            if isinstance(stride, int):
+                stride = (stride, stride)
+            if isinstance(padding, int):
+                padding = (padding, padding)
+            if isinstance(dilation, int):
+                dilation = (dilation, dilation)
+                
+            new_h = (input_h + 2*padding[0] - dilation[0]*(kernel_size[0]-1) - 1) // stride[0] + 1
+            new_w = (input_w + 2*padding[1] - dilation[1]*(kernel_size[1]-1) - 1) // stride[1] + 1
+        else:
+            return True  # Non-spatial mutation
+            
+        # Validate dimensions
+        return new_h >= 1 and new_w >= 1
+        
     def _extract_layer_params(self, module: nn.Module, current_type: str, new_type: str) -> dict:
         """Extract parameters needed for layer type mutation."""
         params = {}
@@ -712,6 +828,53 @@ class ModelPlanner:
             return deepcopy(module)  # fallback
 
     def clear_plan(self): self.plan = {}
+    
+    def _compute_spatial_dimensions(self):
+        """Compute spatial dimensions for all layers in the network"""
+        current_h, current_w = self.input_shape[1], self.input_shape[2]
+        
+        for name, module in self.original_model.named_modules():
+            if name == '':  # Skip root module
+                continue
+                
+            # Store current dimensions
+            self.spatial_tracker[name] = (current_h, current_w)
+            
+            # Update dimensions based on layer type
+            if isinstance(module, (nn.Conv2d, nn.MaxPool2d, nn.AvgPool2d)):
+                kernel_size = module.kernel_size
+                stride = module.stride
+                padding = module.padding
+                dilation = module.dilation
+                
+                if isinstance(kernel_size, int):
+                    kernel_size = (kernel_size, kernel_size)
+                if isinstance(stride, int):
+                    stride = (stride, stride)
+                if isinstance(padding, int):
+                    padding = (padding, padding)
+                if isinstance(dilation, int):
+                    dilation = (dilation, dilation)
+                
+                # Compute output dimensions
+                current_h = (current_h + 2*padding[0] - dilation[0]*(kernel_size[0]-1) - 1) // stride[0] + 1
+                current_w = (current_w + 2*padding[1] - dilation[1]*(kernel_size[1]-1) - 1) // stride[1] + 1
+                
+                # Ensure valid dimensions
+                current_h = max(1, current_h)
+                current_w = max(1, current_w)
+            elif isinstance(module, nn.AdaptiveAvgPool2d) or isinstance(module, nn.AdaptiveMaxPool2d):
+                # Adaptive pooling sets fixed output size
+                if isinstance(module.output_size, int):
+                    current_h = module.output_size
+                    current_w = module.output_size
+                else:
+                    current_h, current_w = module.output_size
+            elif isinstance(module, nn.Linear):
+                # Linear layers flatten spatial dimensions
+                current_h, current_w = 1, 1
+                
+            self.spatial_tracker[name] = (current_h, current_w)
 
     def _build_mutation_groups(self) -> list:
         producers = [n for n in self.graph.nodes if n.op == 'call_module' and isinstance(self.submodules.get(n.target), (nn.Conv2d, nn.Linear))]

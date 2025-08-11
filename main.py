@@ -173,43 +173,11 @@ def run_single_mutation(worker_args):
         
         mutated_model = planner.apply_plan()
         
-        # Enhanced model verification
+        # Enhanced model verification using the new verification module
+        from mutator.verification import verify_model
         try:
-            # Test with multiple resolutions
-            resolutions = [(32, 32), (64, 64), (224, 224)]
-            for h, w in resolutions:
-                test_input = torch.randn(2, 3, h, w)
-                
-                # Forward pass
-                mutated_model.eval()
-                with torch.no_grad():
-                    output = mutated_model(test_input)
-                
-                # Check output shape
-                if output.shape[0] != 2 or output.shape[1] != DEFAULT_OUT_SHAPE[0]:
-                    raise RuntimeError(f"Output shape {output.shape} not as expected for input {h}x{w}")
-                
-                # Backward pass test
-                mutated_model.train()
-                test_input.requires_grad = True
-                output = mutated_model(test_input)
-                loss = output.sum()
-                loss.backward()
-                
-                # Check gradients
-                for name, param in mutated_model.named_parameters():
-                    if param.grad is None:
-                        raise RuntimeError(f"No gradient for parameter {name}")
-            
-            # Simple learning capability check
-            optimizer = torch.optim.SGD(mutated_model.parameters(), lr=0.01)
-            mutated_model.train()
-            test_input = torch.randn(2, 3, 224, 224)
-            output = mutated_model(test_input)
-            loss = output.sum()
-            loss.backward()
-            optimizer.step()
-            
+            if not verify_model(mutated_model, dataset='cifar10'):
+                raise RuntimeError("Model verification failed")
         except Exception as e:
             raise RuntimeError(f"Model verification failed: {str(e)}")
         

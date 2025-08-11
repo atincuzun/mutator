@@ -2,10 +2,10 @@ import multiprocessing
 import os
 
 # List of specific models to mutate (leave empty to mutate all)
-SPECIFIC_MODELS = []
+SPECIFIC_MODELS = ["AlexNet"]
 
-DEBUG_MODE = True
-NUM_ATTEMPTS_PER_MODEL = 1
+DEBUG_MODE = False
+NUM_ATTEMPTS_PER_MODEL = 110
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"
 NUM_WORKERS = multiprocessing.cpu_count()
