@@ -159,6 +159,24 @@ def run_single_mutation(worker_args):
         if not isinstance(model_source, str):
             return 'skipped_not_string', None
 
+        # Determine dataset for this model
+        from mutator.dataset_shapes import get_dataset_params
+        dataset = "ImageNet"  # Default to ImageNet
+        # Try to get dataset from LEMUR data
+        try:
+            df = nn_dataset.data(only_best_accuracy=False)
+            rows = df[df['nn_code'] == model_source]
+            if not rows.empty:
+                best_row = rows.loc[rows['accuracy'].idxmax()]
+                dataset = best_row.get('dataset', "ImageNet")
+        except Exception:
+            dataset = "ImageNet"
+        
+        # Get dataset-specific parameters
+        dataset_params = get_dataset_params(dataset)
+        h, w = dataset_params["spatial_dims"]
+        expected_out_classes = dataset_params["output_size"][0]
+        
         # Use LEMUR loader with specialized parameters
         with ModuleSourceTracer(model_source) as tracer:
             original_model = load_lemur_model(model_source)
@@ -175,8 +193,7 @@ def run_single_mutation(worker_args):
         
         # Enhanced model verification
         try:
-            # Test with intended input resolution only
-            h, w = DEFAULT_IN_SHAPE[2:]
+            # Test with dataset-specific input resolution
             test_input = torch.randn(2, 3, h, w)
             
             # Forward pass
@@ -184,9 +201,9 @@ def run_single_mutation(worker_args):
             with torch.no_grad():
                 output = mutated_model(test_input)
             
-            # Check output shape
-            if output.shape[0] != 2 or output.shape[1] != DEFAULT_OUT_SHAPE[0]:
-                raise RuntimeError(f"Output shape {output.shape} not as expected for input {h}x{w}")
+            # Check output shape with dataset-specific class count
+            if output.shape[0] != 2 or output.shape[1] != expected_out_classes:
+                raise RuntimeError(f"Output shape {output.shape} not as expected for input {h}x{w} (expected {expected_out_classes} classes)")
             
             # Backward pass test
             mutated_model.train()
