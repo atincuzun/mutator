@@ -342,6 +342,12 @@ def run_single_mutation(worker_args):
                 if config.DEBUG_MODE:
                     print(f"[WARN] Failed to save mutated model to DB: {e}")
         
+        # Save plan for successful mutation as well
+        try:
+            save_plan_to_file(model_name, 'success', plan, {"checksum": checksum, "model_path": model_path})
+        except Exception:
+            if config.DEBUG_MODE:
+                print("[WARN] Failed to save success plan file")
         # cleanup temp module after successful mutation
         if hasattr(original_model, '_temp_module_info'):
             tn, tp = getattr(original_model, '_temp_module_info')
