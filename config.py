@@ -5,6 +5,8 @@ import os
 SPECIFIC_MODELS = ["AlexNet"]
 
 DEBUG_MODE = False
+# When True, keeps temporary model source files for debugging.
+KEEP_TEMP_MODEL_FILES = False
 NUM_ATTEMPTS_PER_MODEL = 110
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"

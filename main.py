@@ -68,7 +68,7 @@ def load_lemur_model(model_source: str):
     - Filter prm to the model's supported_hyperparameters() if provided.
     - Fallback to safe defaults for any supported keys not present.
     """
-    constructor = load_constructor_from_string_via_file(model_source)
+    constructor, temp_module_name, temp_module_path = load_constructor_from_string_via_file(model_source)
     
     # LEMUR models require specific parameters
     sig = inspect.signature(constructor)
@@ -134,23 +134,42 @@ def load_lemur_model(model_source: str):
     if "device" in sig.parameters:
         params["device"] = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    return constructor(**params)
-
+    model_instance = constructor(**params)
+    # store temp module info for later cleanup
+    setattr(model_instance, '_temp_module_info', (temp_module_name, temp_module_path))
+    return model_instance
 def load_constructor_from_string_via_file(code_string: str):
+    """Write code to a uniquely named temp module file and import it.
+    Returns (constructor, module_name, module_path). Caller will remove file later.
+    """
     pid = os.getpid(); timestamp = time.time_ns()
     temp_module_name = f"_temp_model_{pid}_{timestamp}"
     temp_module_path = f"{temp_module_name}.py"
-    with open(temp_module_path, "w") as f: f.write(code_string)
-    def cleanup():
+    with open(temp_module_path, 'w', encoding='utf-8') as f:
+        f.write(code_string)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(temp_module_name, temp_module_path)
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    sys.modules[temp_module_name] = module
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    constructor = getattr(module, 'Net')
+    return constructor, temp_module_name, temp_module_path
+
+def cleanup_temp_module(temp_module_name: str, temp_module_path: str):
+    try:
         if os.path.exists(temp_module_path):
-            try: os.remove(temp_module_path)
-            except OSError: pass
-        if temp_module_name in sys.modules:
-            try: del sys.modules[temp_module_name]
-            except KeyError: pass
-    import atexit; atexit.register(cleanup)
-    module = importlib.import_module(temp_module_name)
-    return getattr(module, 'Net')
+            os.remove(temp_module_path)
+    except OSError:
+        pass
+    pycache_dir = os.path.join(os.path.dirname(temp_module_path), '__pycache__')
+    if os.path.isdir(pycache_dir):
+        for fname in os.listdir(pycache_dir):
+            if fname.startswith(temp_module_name):
+                try:
+                    os.remove(os.path.join(pycache_dir, fname))
+                except OSError:
+                    pass
+    sys.modules.pop(temp_module_name, None)
 
 def run_single_mutation(worker_args):
     model_name, model_source = worker_args
@@ -323,6 +342,10 @@ def run_single_mutation(worker_args):
                 if config.DEBUG_MODE:
                     print(f"[WARN] Failed to save mutated model to DB: {e}")
         
+        # cleanup temp module after successful mutation
+        if hasattr(original_model, '_temp_module_info'):
+            tn, tp = getattr(original_model, '_temp_module_info')
+            cleanup_temp_module(tn, tp)
         return 'success', {"path": model_path, "checksum": checksum}
 
     except Exception as e:
@@ -331,6 +354,10 @@ def run_single_mutation(worker_args):
         if 'original_model' not in locals() or not original_model: status = 'fail_instantiation'
         elif not plan: status = 'fail_planning'
         save_plan_to_file(model_name, status, plan, {"error": error_str})
+        # cleanup temp module on failure
+        if 'original_model' in locals() and original_model and hasattr(original_model, '_temp_module_info'):
+            tn, tp = getattr(original_model, '_temp_module_info')
+            cleanup_temp_module(tn, tp)
         return status, None
 
 if __name__ == "__main__":
