@@ -226,6 +226,11 @@ def save_plan_to_file(model_name: str, status: str, plan: dict, details: dict):
     filepath = os.path.join(output_dir, filename)
     report = { "model_name": model_name, "status": status, "timestamp_ns": timestamp, "plan": plan, "details": details }
     
+    # Add debug output to confirm plan saving
+    if config.DEBUG_MODE:
+        print(f"[Utils] Saving mutation plan to: {filepath}")
+        print(f"[Utils] Plan content: {json.dumps(report, indent=2)}")
+    
     class CustomEncoder(json.JSONEncoder):
         def default(self, obj):
             if isinstance(obj, Exception):
@@ -234,6 +239,8 @@ def save_plan_to_file(model_name: str, status: str, plan: dict, details: dict):
 
     with open(filepath, 'w') as f:
         json.dump(report, f, indent=4, cls=CustomEncoder)
+        if config.DEBUG_MODE:
+            print(f"[Utils] Successfully saved mutation plan to: {filepath}")
 
 
 def is_top_level_net_context(frame_info, source_code: str) -> bool:
