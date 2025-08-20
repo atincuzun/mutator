@@ -18,10 +18,10 @@ import hashlib
 import ab.nn.api as nn_dataset
 from ab.nn.util.Util import uuid4  # use canonical hashing
 
-import config
-from utils import save_plan_to_file, ModuleSourceTracer
-from model_planner import ModelPlanner
-from code_mutator import CodeMutator
+from mutator import config
+from .utils import save_plan_to_file, ModuleSourceTracer
+from .model_planner import ModelPlanner
+from .code_mutator import CodeMutator
 
 warnings.filterwarnings("ignore")
 
@@ -259,44 +259,21 @@ def run_single_mutation(worker_args):
             module = original_model.get_submodule(full_module_name)
             
             if mutation_type == "dimension":
-                # Handle symbolic mutations
-                if details.get('symbolic') and details.get('symbolic_expression'):
-                    # For symbolic mutations, we need to determine which parameter to modify
-                    # This should match what the planner intended to mutate
-                    arg_to_change = None
-                    
-                    # The mutation plan should tell us which parameter to change
-                    # For now, assume conv layers change out_channels and bn/ln change num_features
-                    if isinstance(module, nn.Linear): 
-                        arg_to_change = 'out_features'  # Default to output for symbolic
-                    elif isinstance(module, nn.Conv2d): 
-                        arg_to_change = 'out_channels'  # Default to output for symbolic
-                    elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): 
-                        arg_to_change = 'num_features'
-                    
-                    if arg_to_change:
-                        code_mutator.schedule_symbolic_modification(location, arg_to_change, details['symbolic_expression'])
-                        if config.DEBUG_MODE:
-                            print(f"Scheduled symbolic modification for {full_module_name}: {arg_to_change} = {details['symbolic_expression']}")
+                # Always use fixed-value mutations when in always_fixed mode
+                arg_to_change = None
+                if isinstance(module, nn.Linear): 
+                    arg_to_change = 'out_features' if details.get('new_out') is not None else 'in_features'
+                elif isinstance(module, nn.Conv2d): 
+                    arg_to_change = 'out_channels' if details.get('new_out') is not None else 'in_channels'
+                elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): 
+                    arg_to_change = 'num_features'
                 
-                # Handle traditional fixed-value mutations
-                elif details.get('new_out') is not None:
-                    arg_to_change = None
-                    if isinstance(module, nn.Linear): arg_to_change = 'out_features'
-                    elif isinstance(module, nn.Conv2d): arg_to_change = 'out_channels'
-                    elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): arg_to_change = 'num_features'
-                    
-                    if arg_to_change:
-                        code_mutator.schedule_modification(location, arg_to_change, details['new_out'])
-                
-                elif details.get('new_in') is not None:
-                    arg_to_change = None
-                    if isinstance(module, nn.Linear): arg_to_change = 'in_features'
-                    elif isinstance(module, nn.Conv2d): arg_to_change = 'in_channels'
-                    elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): arg_to_change = 'num_features'
-
-                    if arg_to_change:
-                        code_mutator.schedule_modification(location, arg_to_change, details['new_in'])
+                # Force fixed-value mutation regardless of symbolic flag
+                new_value = details.get('new_out') or details.get('new_in')
+                if arg_to_change and new_value is not None:
+                    code_mutator.schedule_modification(location, arg_to_change, new_value)
+                    if config.DEBUG_MODE:
+                        print(f"Scheduled fixed-value modification for {full_module_name}: {arg_to_change} = {new_value}")
             
             elif mutation_type == "activation":
                 new_activation = details.get('new_activation')
@@ -324,10 +301,12 @@ def run_single_mutation(worker_args):
         # Save to nn-dataset repository
         # Use nn-dataset hashing (whitespace-insensitive) for consistency
         checksum = uuid4(modified_code)
+        # Add timestamp to ensure unique filenames even for identical mutations
+        timestamp = int(time.time() * 1000)  # Millisecond precision
         # Use configurable output root from config
         model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
         os.makedirs(model_dir, exist_ok=True)
-        model_path = os.path.join(model_dir, f"mutated_{checksum}.py")
+        model_path = os.path.join(model_dir, f"mutated_{checksum}_{timestamp}.py")
         
         with open(model_path, 'w') as f:
             f.write(modified_code)

@@ -7,7 +7,7 @@ import torch.nn as nn
 from functools import wraps
 import re
 
-import config
+from mutator import config
 
 class ModuleSourceTracer:
     _instance = None

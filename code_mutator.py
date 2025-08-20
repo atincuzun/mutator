@@ -1,6 +1,6 @@
 import ast
-import config
-import utils
+from . import config
+from . import utils
 
 class CodeMutator(ast.NodeTransformer):
     

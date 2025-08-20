@@ -4,7 +4,7 @@ import os
 # List of specific models to mutate (leave empty to mutate all)
 SPECIFIC_MODELS = ["ResNet"]
 
-DEBUG_MODE = False
+DEBUG_MODE = True
 # When True, keeps temporary model source files for debugging.
 KEEP_TEMP_MODEL_FILES = False
 NUM_ATTEMPTS_PER_MODEL = 110
@@ -117,15 +117,20 @@ HELPER_FUNCTION_PATTERNS = [
 # Top-level class patterns to identify Net classes for fixed-number mutations
 TOP_LEVEL_CLASS_PATTERNS = ['Net']
 
+# Mutation mode configuration
+# Options: 'auto' (context-aware), 'always_symbolic', 'always_fixed'
+MUTATION_MODE = 'always_fixed'
+
 # Symbolic mutation weights (probability distribution for symbolic vs fixed mutations)
+# Only used when MUTATION_MODE is 'auto'
 SYMBOLIC_MUTATION_WEIGHTS = {
-    'symbolic': 0.7,   # 70% chance of symbolic mutations in block definitions
-    'fixed': 0.3       # 30% chance of fixed-number mutations in top-level Net classes
+    'symbolic': 0.0,   # 0% chance of symbolic mutations
+    'fixed': 1.0       # 100% chance of fixed-number mutations
 }
 
 # Available symbolic operations for parameter-based mutations
-SYMBOLIC_OPERATIONS = ['*', '//', '+', '-']
-SYMBOLIC_OPERANDS = [2, 4, 8, 16, 32, 64]  # Common scaling factors
+SYMBOLIC_OPERATIONS = ['*', '//', '+', '-', '<<', '>>']  # Added bit shifts for more variety
+SYMBOLIC_OPERANDS = list(range(1, 65))  # Expanded to include more values for free combinations
 
 # --- CONVNEXT COMPATIBILITY SETTINGS ---
 # Modules that are problematic for torch.fx symbolic tracing

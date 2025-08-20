@@ -7,9 +7,9 @@ import operator
 import hashlib
 import os
 import ast
-import config
+from . import config
 import inspect
-from utils import is_block_definition_context, is_top_level_net_context, get_available_parameters
+from .utils import is_block_definition_context, is_top_level_net_context, get_available_parameters
 
 class ModelPlanner:
     VALID_CHANNEL_SIZES = config.VALID_CHANNEL_SIZES
@@ -91,7 +91,7 @@ class ModelPlanner:
             return self._plan_dimension_mutation()  # fallback
 
     def _plan_dimension_mutation(self) -> dict:
-        """Dimension mutation with spatial validation and context awareness."""
+        """Dimension mutation with unified in/out channel system and free symbolic combinations."""
         mutation_groups = self._build_mutation_groups()
         if not mutation_groups:
             return {}
@@ -102,20 +102,30 @@ class ModelPlanner:
 
         # Find a valid mutation group
         valid_mutation_group = None
+        original_dim = None
         new_dim = None
         
-        # Try up to 5 times to find a valid mutation
-        for _ in range(5):
+        # Try up to 10 times to find a valid mutation (increased for more flexibility)
+        for _ in range(10):
             mutation_group = random.choice(mutation_groups)
             original_dim_module = self.submodules[mutation_group[0].target]
             original_dim = original_dim_module.out_channels if isinstance(original_dim_module, nn.Conv2d) else original_dim_module.out_features
 
-            valid_new_sizes = [s for s in self.VALID_CHANNEL_SIZES if s != original_dim]
-            if not valid_new_sizes:
+            # Use unified channel dimension changer: start with random mutation
+            # Choose a mutation factor from a wider range for more diversity
+            mutation_factors = [0.25, 0.5, 0.75, 1.25, 1.5, 1.75, 2, 3, 4, 5, 6, 7, 8]
+            mutation_factor = random.choice(mutation_factors)
+            
+            # Calculate proposed new dimension
+            proposed_dim = int(original_dim * mutation_factor)
+            
+            # Round to nearest valid channel size
+            new_dim = min(self.VALID_CHANNEL_SIZES, key=lambda x: abs(x - proposed_dim))
+            
+            # Ensure it's different from original
+            if new_dim == original_dim:
                 continue
                 
-            new_dim = random.choice(valid_new_sizes)
-            
             # Validate that this mutation won't break downstream layers
             consumers, propagators = self._find_downstream_dependencies(mutation_group)
             
@@ -133,7 +143,7 @@ class ModelPlanner:
         
         if not valid_mutation_group:
             if config.DEBUG_MODE:
-                print("[ModelPlanner] Could not find valid dimension mutation after 5 attempts")
+                print("[ModelPlanner] Could not find valid dimension mutation after 10 attempts")
             return {}
             
         mutation_group = valid_mutation_group
@@ -143,6 +153,7 @@ class ModelPlanner:
         def get_base_plan(node_target):
             return {"mutation_type": "dimension", "new_out": None, "new_in": None, "source_location": self.source_map.get(node_target)}
 
+        # Unified propagation: apply the same mutation pattern throughout
         for node in mutation_group:
             if node.target == self.final_layer_name:
                 continue
@@ -183,7 +194,7 @@ class ModelPlanner:
 
         self.plan = current_plan
         if config.DEBUG_MODE:
-            print("[ModelPlanner] Generated dimension mutation plan:")
+            print("[ModelPlanner] Generated unified dimension mutation plan:")
             import json
             print(json.dumps(self.plan, indent=2))
         return self.plan
@@ -1028,41 +1039,33 @@ class ModelPlanner:
 
     def _should_use_symbolic_mutation(self, module_name: str) -> bool:
         """
-        Determine if a mutation should be symbolic based on context.
-        Symbolic mutations are used for helper functions and block definitions,
-        while fixed-number mutations are used for top-level Net classes.
+        Determine if a mutation should be symbolic based on configuration.
+        Respects the MUTATION_MODE setting: 'auto', 'always_symbolic', or 'always_fixed'.
         """
-        if module_name not in self.source_map:
-            return False
-            
-        source_location = self.source_map[module_name]
-        if not source_location or 'lineno' not in source_location:
-            return False
-            
-        # Get the source code for context analysis
-        source_code = self._get_source_code_for_location(source_location)
-        if not source_code:
-            return False
-            
-        # Create a mock frame info for the source location
-        frame_info = self._create_mock_frame_info(source_location, module_name)
-        
-        # Check if this is in a block definition context (should use symbolic)
-        if is_block_definition_context(frame_info, source_code):
+        # Check configuration mode first
+        if config.MUTATION_MODE == 'always_symbolic':
             if config.DEBUG_MODE:
-                print(f"[ModelPlanner] Using symbolic mutation for {module_name} (block definition context)")
+                print(f"[ModelPlanner] Using symbolic mutation for {module_name} (always_symbolic mode)")
             return True
             
-        # Check if this is in a top-level Net context (should use fixed numbers)
-        if is_top_level_net_context(frame_info, source_code):
+        if config.MUTATION_MODE == 'always_fixed':
             if config.DEBUG_MODE:
-                print(f"[ModelPlanner] Using fixed-number mutation for {module_name} (top-level Net context)")
+                print(f"[ModelPlanner] Using fixed-number mutation for {module_name} (always_fixed mode)")
             return False
             
-        # Default to fixed-number mutations for safety
-        if config.DEBUG_MODE:
-            print(f"[ModelPlanner] Using fixed-number mutation for {module_name} (default)")
-        return False
+        # For 'auto' mode, use weighted probability from SYMBOLIC_MUTATION_WEIGHTS
+        choices = ['symbolic', 'fixed']
+        weights = [config.SYMBOLIC_MUTATION_WEIGHTS['symbolic'], config.SYMBOLIC_MUTATION_WEIGHTS['fixed']]
+        decision = random.choices(choices, weights=weights, k=1)[0]
+        
+        if decision == 'symbolic':
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using symbolic mutation for {module_name} (weighted probability)")
+            return True
+        else:
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using fixed-number mutation for {module_name} (weighted probability)")
+            return False
 
     def _generate_symbolic_expression(self, module_name: str, target_value: int) -> str:
         """
@@ -1140,57 +1143,126 @@ class ModelPlanner:
 
     def _create_symbolic_expression(self, target_value: int, available_params: list) -> str:
         """
-        Create a symbolic expression that evaluates to the target value.
-        Tries to use available parameters with meaningful multipliers (not 1).
+        Create free symbolic combinations that evaluate to the target value.
+        Generates complex expressions using multiple operations and parameters.
         """
         if not available_params:
             return str(target_value)
             
-        # Common neural network parameter patterns
+        # Common neural network parameter patterns (prioritize these)
         common_params = ['in_channels', 'out_channels', 'planes', 'width', 'depth', 'expansion']
         
-        # Randomize the order of multipliers to create diverse mutations
-        multipliers = [2, 4, 8, 16, 32, 64, 0.5, 0.25]
-        random.shuffle(multipliers)
+        # Filter available params to prioritize common ones
+        prioritized_params = [p for p in available_params if p in common_params]
+        if not prioritized_params:
+            prioritized_params = available_params
         
-        # Try to match available params with common patterns
-        for param in available_params:
-            if param in common_params:
-                # Try meaningful multipliers in random order
-                for multiplier in multipliers:
-                    if isinstance(multiplier, float):
-                        # For fractional multipliers, check if target_value is evenly divisible
-                        expected_base = target_value / multiplier
-                        if expected_base == int(expected_base) and 8 <= expected_base <= 1024:
-                            if multiplier == 0.5:
-                                return f"{param} // 2"
-                            elif multiplier == 0.25:
-                                return f"{param} // 4"
-                    else:
-                        # For integer multipliers
-                        if target_value % multiplier == 0:
-                            base_value = target_value // multiplier
-                            # If base value is reasonable, use it
-                            if 8 <= base_value <= 1024:
-                                return f"{param} * {multiplier}"
+        # Try multiple times to create a meaningful expression
+        for attempt in range(5):
+            # Choose expression complexity (1-3 operations)
+            complexity = random.randint(1, 3)
+            
+            if complexity == 1:
+                # Simple expression: param op value
+                param = random.choice(prioritized_params)
+                operation = random.choice(config.SYMBOLIC_OPERATIONS)
+                operand = random.choice(config.SYMBOLIC_OPERANDS)
                 
-        # Try the first available parameter with meaningful multipliers
-        if available_params:
-            first_param = available_params[0]
-            random.shuffle(multipliers)  # Randomize again for fallback
-            for multiplier in multipliers:
-                if isinstance(multiplier, float):
-                    expected_base = target_value / multiplier
-                    if expected_base == int(expected_base) and 8 <= expected_base <= 1024:
-                        if multiplier == 0.5:
-                            return f"{first_param} // 2"
-                        elif multiplier == 0.25:
-                            return f"{first_param} // 4"
-                else:
-                    if target_value % multiplier == 0:
-                        base_value = target_value // multiplier
-                        if 8 <= base_value <= 1024:
-                            return f"{first_param} * {multiplier}"
+                # For division operations, ensure it's meaningful
+                if operation in ['//', '/'] and operand == 0:
+                    continue
+                    
+                expression = f"{param} {operation} {operand}"
+                
+            elif complexity == 2:
+                # Medium complexity: (param1 op1 value1) op2 (param2 op3 value2) or similar
+                param1 = random.choice(prioritized_params)
+                param2 = random.choice(prioritized_params)
+                op1 = random.choice(config.SYMBOLIC_OPERATIONS)
+                op2 = random.choice(['+', '-', '*', '//'])
+                op3 = random.choice(config.SYMBOLIC_OPERATIONS)
+                val1 = random.choice(config.SYMBOLIC_OPERANDS)
+                val2 = random.choice(config.SYMBOLIC_OPERANDS)
+                
+                # Avoid division by zero
+                if (op1 in ['//', '/'] and val1 == 0) or (op3 in ['//', '/'] and val2 == 0):
+                    continue
+                
+                # Choose expression pattern randomly
+                patterns = [
+                    f"({param1} {op1} {val1}) {op2} ({param2} {op3} {val2})",
+                    f"{param1} {op1} {val1} {op2} {param2} {op3} {val2}",
+                    f"({param1} {op2} {param2}) {op1} {val1}",
+                    f"{param1} {op1} ({val1} {op2} {val2})"
+                ]
+                expression = random.choice(patterns)
+                
+            else:
+                # High complexity: nested expressions
+                param1 = random.choice(prioritized_params)
+                param2 = random.choice(prioritized_params)
+                param3 = random.choice(prioritized_params) if len(prioritized_params) > 2 else param1
+                
+                op1 = random.choice(config.SYMBOLIC_OPERATIONS)
+                op2 = random.choice(config.SYMBOLIC_OPERATIONS)
+                op3 = random.choice(config.SYMBOLIC_OPERATIONS)
+                val1 = random.choice(config.SYMBOLIC_OPERANDS)
+                val2 = random.choice(config.SYMBOLIC_OPERANDS)
+                val3 = random.choice(config.SYMBOLIC_OPERANDS)
+                
+                # Avoid division by zero
+                if any(op in ['//', '/'] and val == 0 for op, val in [(op1, val1), (op2, val2), (op3, val3)]):
+                    continue
+                
+                patterns = [
+                    f"({param1} {op1} {val1}) {op2} ({param2} {op3} {val2}) + {param3}",
+                    f"{param1} {op1} {val1} * ({param2} {op2} {val2}) // {val3}",
+                    f"({param1} + {param2}) {op1} {val1} - {param3} {op2} {val2}",
+                    f"{param1} << {val1} {op1} {param2} >> {val2}"
+                ]
+                expression = random.choice(patterns)
+            
+            # Try to evaluate the expression safely to check if it's reasonable
+            try:
+                # Create a mock environment with reasonable parameter values
+                # Use the target_value as a baseline for parameter values
+                mock_env = {}
+                for param in set(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', expression)):
+                    if param not in ['and', 'or', 'not', 'if', 'else', 'True', 'False', 'None']:
+                        # Assign a reasonable value based on target_value
+                        mock_env[param] = max(8, min(1024, target_value // random.randint(1, 8)))
+                
+                # Evaluate the expression
+                result = eval(expression, {}, mock_env)
+                
+                # Check if the result is close to the target value and reasonable
+                if (isinstance(result, (int, float)) and 
+                    result > 0 and 
+                    abs(result - target_value) <= target_value * 0.5 and  # Allow 50% variance
+                    8 <= result <= 2048):  # Reasonable range for neural network parameters
+                    return expression
+                    
+            except (SyntaxError, NameError, TypeError, ZeroDivisionError, ValueError):
+                continue
         
-        # If no meaningful symbolic expression found, return the target value as string
+        # Fallback: try simple expressions with common parameters
+        for param in prioritized_params:
+            for operation in config.SYMBOLIC_OPERATIONS:
+                for operand in config.SYMBOLIC_OPERANDS:
+                    if operation in ['//', '/'] and operand == 0:
+                        continue
+                        
+                    expression = f"{param} {operation} {operand}"
+                    try:
+                        mock_env = {param: max(8, min(1024, target_value // 2))}
+                        result = eval(expression, {}, mock_env)
+                        if (isinstance(result, (int, float)) and 
+                            result > 0 and 
+                            abs(result - target_value) <= target_value * 0.3 and
+                            8 <= result <= 1024):
+                            return expression
+                    except:
+                        continue
+        
+        # Final fallback: return target value as string
         return str(target_value)
