@@ -6,6 +6,7 @@ import random
 import operator
 import hashlib
 import os
+import ast
 import config
 import inspect
 from utils import is_block_definition_context, is_top_level_net_context, get_available_parameters
@@ -1097,10 +1098,20 @@ class ModelPlanner:
         return symbolic_expr
 
     def _get_source_code_for_location(self, source_location: dict) -> str:
-        """Get source code for the given location (placeholder implementation)."""
-        # In a real implementation, this would read the source file
-        # For now, we return an empty string since we don't have file access
-        return ""
+        """Get source code for the given location by reading the source file."""
+        if not source_location or 'filename' not in source_location:
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] No filename in source_location: {source_location}")
+            return ""
+        
+        filename = source_location['filename']
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                return f.read()
+        except (IOError, OSError, UnicodeDecodeError) as e:
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Failed to read source file {filename}: {e}")
+            return ""
 
     def _create_mock_frame_info(self, source_location: dict, module_name: str) -> object:
         """Create a mock frame info object for context analysis."""
@@ -1130,7 +1141,7 @@ class ModelPlanner:
     def _create_symbolic_expression(self, target_value: int, available_params: list) -> str:
         """
         Create a symbolic expression that evaluates to the target value.
-        Tries to use available parameters with common multipliers.
+        Tries to use available parameters with meaningful multipliers (not 1).
         """
         if not available_params:
             return str(target_value)
@@ -1138,24 +1149,48 @@ class ModelPlanner:
         # Common neural network parameter patterns
         common_params = ['in_channels', 'out_channels', 'planes', 'width', 'depth', 'expansion']
         
+        # Randomize the order of multipliers to create diverse mutations
+        multipliers = [2, 4, 8, 16, 32, 64, 0.5, 0.25]
+        random.shuffle(multipliers)
+        
         # Try to match available params with common patterns
         for param in available_params:
             if param in common_params:
-                # Try to find a multiplier that makes sense
-                for multiplier in [1, 2, 4, 8, 16, 32, 64]:
+                # Try meaningful multipliers in random order
+                for multiplier in multipliers:
+                    if isinstance(multiplier, float):
+                        # For fractional multipliers, check if target_value is evenly divisible
+                        expected_base = target_value / multiplier
+                        if expected_base == int(expected_base) and 8 <= expected_base <= 1024:
+                            if multiplier == 0.5:
+                                return f"{param} // 2"
+                            elif multiplier == 0.25:
+                                return f"{param} // 4"
+                    else:
+                        # For integer multipliers
+                        if target_value % multiplier == 0:
+                            base_value = target_value // multiplier
+                            # If base value is reasonable, use it
+                            if 8 <= base_value <= 1024:
+                                return f"{param} * {multiplier}"
+                
+        # Try the first available parameter with meaningful multipliers
+        if available_params:
+            first_param = available_params[0]
+            random.shuffle(multipliers)  # Randomize again for fallback
+            for multiplier in multipliers:
+                if isinstance(multiplier, float):
+                    expected_base = target_value / multiplier
+                    if expected_base == int(expected_base) and 8 <= expected_base <= 1024:
+                        if multiplier == 0.5:
+                            return f"{first_param} // 2"
+                        elif multiplier == 0.25:
+                            return f"{first_param} // 4"
+                else:
                     if target_value % multiplier == 0:
                         base_value = target_value // multiplier
-                        # If base value is reasonable, use it
                         if 8 <= base_value <= 1024:
-                            return f"{param} * {multiplier}"
-                
-        # Fallback: try to use the first parameter with a multiplier
-        first_param = available_params[0]
-        for multiplier in [1, 2, 4, 8]:
-            if target_value % multiplier == 0:
-                base_value = target_value // multiplier
-                if 8 <= base_value <= 1024:
-                    return f"{first_param} * {multiplier}"
+                            return f"{first_param} * {multiplier}"
         
-        # Final fallback: just return the target value as string
+        # If no meaningful symbolic expression found, return the target value as string
         return str(target_value)

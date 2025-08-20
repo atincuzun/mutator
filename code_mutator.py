@@ -49,6 +49,19 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled dimension modification: {mod}")
 
+    def schedule_symbolic_modification(self, location: dict, arg_name: str, symbolic_expression: str):
+        """Schedule a symbolic expression modification."""
+        if location and symbolic_expression:
+            mod = {
+                'type': 'symbolic',
+                'location': location,
+                'arg_name': arg_name,
+                'symbolic_expression': symbolic_expression
+            }
+            self.modifications.append(mod)
+            if config.DEBUG_MODE:
+                print(f"[CodeMutator] Scheduled symbolic modification: {mod}")
+
     def schedule_activation_modification(self, location: dict, new_activation: str):
         """Schedule an activation function modification."""
         if location and new_activation:
@@ -124,6 +137,8 @@ class CodeMutator(ast.NodeTransformer):
 
                 if mod['type'] == 'dimension':
                     self._apply_dimension_modification(node, mod)
+                elif mod['type'] == 'symbolic':
+                    self._apply_symbolic_modification(node, mod)
                 elif mod['type'] == 'activation':
                     self._apply_activation_modification(node, mod)
                 elif mod['type'] == 'layer_type':
@@ -203,6 +218,42 @@ class CodeMutator(ast.NodeTransformer):
 
         if not modified and config.DEBUG_MODE:
              print(f"  > WARNING: Could not find argument '{mod['arg_name']}' to modify at this location.")
+
+    def _apply_symbolic_modification(self, node: ast.Call, mod: dict):
+        """Apply symbolic expression modifications"""
+        modified = False
+        symbolic_expr = mod['symbolic_expression']
+        
+        # Parse the symbolic expression into an AST node
+        try:
+            # Parse the expression (e.g., "planes * 2" or "in_channels // 4")
+            expr_node = ast.parse(symbolic_expr, mode='eval').body
+        except SyntaxError:
+            if config.DEBUG_MODE:
+                print(f"  > ERROR: Could not parse symbolic expression '{symbolic_expr}'")
+            return
+
+        # Find and replace the target argument
+        for kw in node.keywords:
+            if kw.arg == mod['arg_name']:
+                kw.value = expr_node
+                modified = True
+                if config.DEBUG_MODE:
+                    print(f"  > Modified keyword arg '{mod['arg_name']}' to symbolic expression: {symbolic_expr}")
+                break
+
+        # If not found in keyword args, check positional args
+        if not modified and mod['arg_name'] in self.ARG_TO_POS_MAP:
+            pos_index = self.ARG_TO_POS_MAP[mod['arg_name']]
+            if pos_index < len(node.args):
+                old_val = getattr(node.args[pos_index], 'value', 'unknown')
+                node.args[pos_index] = expr_node
+                if config.DEBUG_MODE:
+                    print(f"  > Modified positional arg {pos_index} ('{mod['arg_name']}') from ~{old_val} to symbolic expression: {symbolic_expr}")
+                modified = True
+
+        if not modified and config.DEBUG_MODE:
+            print(f"  > WARNING: Could not find argument '{mod['arg_name']}' to modify at this location.")
 
     def _apply_kernel_size_modification(self, node: ast.Call, mod: dict):
         """Apply kernel size modifications."""

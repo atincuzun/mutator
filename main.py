@@ -259,7 +259,28 @@ def run_single_mutation(worker_args):
             module = original_model.get_submodule(full_module_name)
             
             if mutation_type == "dimension":
-                if details.get('new_out') is not None:
+                # Handle symbolic mutations
+                if details.get('symbolic') and details.get('symbolic_expression'):
+                    # For symbolic mutations, we need to determine which parameter to modify
+                    # This should match what the planner intended to mutate
+                    arg_to_change = None
+                    
+                    # The mutation plan should tell us which parameter to change
+                    # For now, assume conv layers change out_channels and bn/ln change num_features
+                    if isinstance(module, nn.Linear): 
+                        arg_to_change = 'out_features'  # Default to output for symbolic
+                    elif isinstance(module, nn.Conv2d): 
+                        arg_to_change = 'out_channels'  # Default to output for symbolic
+                    elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): 
+                        arg_to_change = 'num_features'
+                    
+                    if arg_to_change:
+                        code_mutator.schedule_symbolic_modification(location, arg_to_change, details['symbolic_expression'])
+                        if config.DEBUG_MODE:
+                            print(f"Scheduled symbolic modification for {full_module_name}: {arg_to_change} = {details['symbolic_expression']}")
+                
+                # Handle traditional fixed-value mutations
+                elif details.get('new_out') is not None:
                     arg_to_change = None
                     if isinstance(module, nn.Linear): arg_to_change = 'out_features'
                     elif isinstance(module, nn.Conv2d): arg_to_change = 'out_channels'
@@ -268,7 +289,7 @@ def run_single_mutation(worker_args):
                     if arg_to_change:
                         code_mutator.schedule_modification(location, arg_to_change, details['new_out'])
                 
-                if details.get('new_in') is not None:
+                elif details.get('new_in') is not None:
                     arg_to_change = None
                     if isinstance(module, nn.Linear): arg_to_change = 'in_features'
                     elif isinstance(module, nn.Conv2d): arg_to_change = 'in_channels'

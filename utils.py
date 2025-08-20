@@ -128,7 +128,7 @@ class ModuleSourceTracer:
             tracer = ModuleSourceTracer._instance
             if tracer:
                 try:
-                    # Smart stack walking to find the actual call site, not helper functions
+                    # Smart stack walking to find the actual call site
                     target_frame = None
                     stack_frames = inspect.stack()
                     
@@ -138,33 +138,38 @@ class ModuleSourceTracer:
                             print(f"  Frame {i}: {frame.function} at {frame.filename}:{frame.lineno}")
                     
                     # Start from frame 1 (caller of this patched_init)
-                    for i in range(1, min(len(stack_frames), 10)):  # Limit search depth
+                    for i in range(1, min(len(stack_frames), 15)):  # Increased search depth to 15
                         frame_info = stack_frames[i]
                         
+                        # Skip only true internal Python frames, but allow model methods like __init__, _make_layer
+                        if ('site-packages' in frame_info.filename or
+                            'lib/python' in frame_info.filename or
+                            frame_info.filename.endswith('utils.py')):  # Skip our own utils.py
+                            if config.DEBUG_MODE:
+                                print(f"[SourceTracer] Skipping internal frame: {frame_info.function}")
+                            continue
+                        
                         # Skip if this frame is inside a helper function (when helper mutations disabled)
-                        if tracer._is_helper_function_frame(frame_info):
-                            if config.DEBUG_MODE:
-                                print(f"[SourceTracer] Skipping helper function frame: {frame_info.function} at line {frame_info.lineno}")
-                            continue
-                        
-                        # Additional check: ensure this frame is in a class method (__init__)
-                        if frame_info.function not in ['__init__', '<module>']:
-                            if config.DEBUG_MODE:
-                                print(f"[SourceTracer] Skipping non-init frame: {frame_info.function}")
-                            continue
-                        
-                        # When helper mutations are disabled, prefer direct instantiations
                         if not config.ALLOW_HELPER_FUNCTION_MUTATIONS:
-                            if not tracer._is_direct_instantiation_call(frame_info):
+                            if tracer._is_helper_function_frame(frame_info):
                                 if config.DEBUG_MODE:
-                                    print(f"[SourceTracer] Skipping indirect instantiation at line {frame_info.lineno}")
+                                    print(f"[SourceTracer] Skipping helper function frame: {frame_info.function} at line {frame_info.lineno}")
                                 continue
                         
-                        # This should be the actual call site (like self.conv1 = conv3x3(...) or self.relu = nn.ReLU(...))
-                        target_frame = frame_info
-                        if config.DEBUG_MODE:
-                            print(f"[SourceTracer] Found target frame: {frame_info.function} at line {frame_info.lineno}")
-                        break
+                        # For symbolic mutations, we want to capture ALL call sites, not just direct instantiations
+                        # This allows context-aware mutation decisions later
+                        if frame_info.code_context and any('nn.' in line or 'torch.nn.' in line for line in frame_info.code_context):
+                            target_frame = frame_info
+                            if config.DEBUG_MODE:
+                                print(f"[SourceTracer] Found target frame: {frame_info.function} at line {frame_info.lineno}")
+                            break
+                        
+                        # Also capture frames that look like module assignments (self.conv1 = ...)
+                        if frame_info.code_context and any('self.' in line and '=' in line for line in frame_info.code_context):
+                            target_frame = frame_info
+                            if config.DEBUG_MODE:
+                                print(f"[SourceTracer] Found assignment frame: {frame_info.function} at line {frame_info.lineno}")
+                            break
                     
                     if target_frame:
                         lineno = target_frame.lineno
@@ -174,10 +179,11 @@ class ModuleSourceTracer:
                                 "lineno": call_node.lineno,
                                 "end_lineno": getattr(call_node, 'end_lineno', call_node.lineno),
                                 "col_offset": call_node.col_offset,
-                                "end_col_offset": getattr(call_node, 'end_col_offset', -1)
+                                "end_col_offset": getattr(call_node, 'end_col_offset', -1),
+                                "filename": target_frame.filename  # Add filename for source code reading
                             }
                             if config.DEBUG_MODE:
-                                print(f"[SourceTracer] Captured source location: line {call_node.lineno}, col {call_node.col_offset}")
+                                print(f"[SourceTracer] Captured source location: line {call_node.lineno}, col {call_node.col_offset}, file: {target_frame.filename}")
                         else:
                             if config.DEBUG_MODE:
                                 print(f"[SourceTracer] No AST call node found at line {lineno}")
