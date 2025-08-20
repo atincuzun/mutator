@@ -2,7 +2,7 @@ import multiprocessing
 import os
 
 # List of specific models to mutate (leave empty to mutate all)
-SPECIFIC_MODELS = ["AlexNet"]
+SPECIFIC_MODELS = ["ResNet"]
 
 DEBUG_MODE = False
 # When True, keeps temporary model source files for debugging.
@@ -66,12 +66,12 @@ LAYER_TYPE_MUTATIONS = {
 
 # Mutation type weights (probability distribution)
 MUTATION_TYPE_WEIGHTS = {
-    'dimension': 0.25,      # 25% - existing dimension mutations
-    'activation': 0.25,     # 25% - activation function mutations
-    'layer_type': 0.15,     # 15% - layer type mutations
-    'kernel_size': 0.15,    # 15% - kernel size mutations
-    'stride': 0.10,         # 10% - stride mutations
-    'architectural': 0.10   # 10% - high-level architectural mutations
+    'dimension': 1.0,       # 100% - only dimension mutations (in/out sizes)
+    'activation': 0.0,      # 0% - no activation function mutations
+    'layer_type': 0.0,      # 0% - no layer type mutations
+    'kernel_size': 0.0,     # 0% - no kernel size mutations
+    'stride': 0.0,          # 0% - no stride mutations
+    'architectural': 0.0    # 0% - no architectural mutations
 }
 
 # Kernel size mutations for Conv2d layers
@@ -111,7 +111,21 @@ HELPER_FUNCTION_PATTERNS = [
     'make_layer', 'make_block', 'make_stage',          # Layer builders  
     'build_', 'create_', 'get_',                       # Factory functions
     'downsample', 'upsample',                          # Sampling helpers
+    'Block', 'Bottleneck', 'BasicBlock', 'DPNBlock',   # Common block patterns
 ]
+
+# Top-level class patterns to identify Net classes for fixed-number mutations
+TOP_LEVEL_CLASS_PATTERNS = ['Net']
+
+# Symbolic mutation weights (probability distribution for symbolic vs fixed mutations)
+SYMBOLIC_MUTATION_WEIGHTS = {
+    'symbolic': 0.7,   # 70% chance of symbolic mutations in block definitions
+    'fixed': 0.3       # 30% chance of fixed-number mutations in top-level Net classes
+}
+
+# Available symbolic operations for parameter-based mutations
+SYMBOLIC_OPERATIONS = ['*', '//', '+', '-']
+SYMBOLIC_OPERANDS = [2, 4, 8, 16, 32, 64]  # Common scaling factors
 
 # --- CONVNEXT COMPATIBILITY SETTINGS ---
 # Modules that are problematic for torch.fx symbolic tracing

@@ -7,6 +7,8 @@ import operator
 import hashlib
 import os
 import config
+import inspect
+from utils import is_block_definition_context, is_top_level_net_context, get_available_parameters
 
 class ModelPlanner:
     VALID_CHANNEL_SIZES = config.VALID_CHANNEL_SIZES
@@ -88,7 +90,7 @@ class ModelPlanner:
             return self._plan_dimension_mutation()  # fallback
 
     def _plan_dimension_mutation(self) -> dict:
-        """Dimension mutation with spatial validation."""
+        """Dimension mutation with spatial validation and context awareness."""
         mutation_groups = self._build_mutation_groups()
         if not mutation_groups:
             return {}
@@ -145,17 +147,38 @@ class ModelPlanner:
                 continue
             if node.target not in current_plan:
                 current_plan[node.target] = get_base_plan(node.target)
-            current_plan[node.target]["new_out"] = new_dim
+            
+            # Check if this mutation should be symbolic based on context
+            if self._should_use_symbolic_mutation(node.target):
+                current_plan[node.target]["symbolic"] = True
+                current_plan[node.target]["symbolic_expression"] = self._generate_symbolic_expression(node.target, new_dim)
+            else:
+                current_plan[node.target]["symbolic"] = False
+                current_plan[node.target]["new_out"] = new_dim
 
         for consumer_node in consumers:
             if consumer_node.target not in current_plan:
                 current_plan[consumer_node.target] = get_base_plan(consumer_node.target)
-            current_plan[consumer_node.target]["new_in"] = new_dim
+            
+            # Check if this mutation should be symbolic based on context
+            if self._should_use_symbolic_mutation(consumer_node.target):
+                current_plan[consumer_node.target]["symbolic"] = True
+                current_plan[consumer_node.target]["symbolic_expression"] = self._generate_symbolic_expression(consumer_node.target, new_dim)
+            else:
+                current_plan[consumer_node.target]["symbolic"] = False
+                current_plan[consumer_node.target]["new_in"] = new_dim
 
         for propagator_node in propagators:
             if propagator_node.target not in current_plan:
                 current_plan[propagator_node.target] = get_base_plan(propagator_node.target)
-            current_plan[propagator_node.target]["new_in"] = new_dim
+            
+            # Check if this mutation should be symbolic based on context
+            if self._should_use_symbolic_mutation(propagator_node.target):
+                current_plan[propagator_node.target]["symbolic"] = True
+                current_plan[propagator_node.target]["symbolic_expression"] = self._generate_symbolic_expression(propagator_node.target, new_dim)
+            else:
+                current_plan[propagator_node.target]["symbolic"] = False
+                current_plan[propagator_node.target]["new_in"] = new_dim
 
         self.plan = current_plan
         if config.DEBUG_MODE:
@@ -1001,3 +1024,138 @@ class ModelPlanner:
             return hashlib.sha256(signature.encode()).hexdigest()
         except Exception:
             return os.urandom(16).hex()
+
+    def _should_use_symbolic_mutation(self, module_name: str) -> bool:
+        """
+        Determine if a mutation should be symbolic based on context.
+        Symbolic mutations are used for helper functions and block definitions,
+        while fixed-number mutations are used for top-level Net classes.
+        """
+        if module_name not in self.source_map:
+            return False
+            
+        source_location = self.source_map[module_name]
+        if not source_location or 'lineno' not in source_location:
+            return False
+            
+        # Get the source code for context analysis
+        source_code = self._get_source_code_for_location(source_location)
+        if not source_code:
+            return False
+            
+        # Create a mock frame info for the source location
+        frame_info = self._create_mock_frame_info(source_location, module_name)
+        
+        # Check if this is in a block definition context (should use symbolic)
+        if is_block_definition_context(frame_info, source_code):
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using symbolic mutation for {module_name} (block definition context)")
+            return True
+            
+        # Check if this is in a top-level Net context (should use fixed numbers)
+        if is_top_level_net_context(frame_info, source_code):
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using fixed-number mutation for {module_name} (top-level Net context)")
+            return False
+            
+        # Default to fixed-number mutations for safety
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Using fixed-number mutation for {module_name} (default)")
+        return False
+
+    def _generate_symbolic_expression(self, module_name: str, target_value: int) -> str:
+        """
+        Generate a symbolic expression for parameter-dependent mutations.
+        Creates expressions like 'in_channels * 2' or 'planes * 4' based on context.
+        """
+        if module_name not in self.source_map:
+            return str(target_value)
+            
+        source_location = self.source_map[module_name]
+        if not source_location or 'lineno' not in source_location:
+            return str(target_value)
+            
+        # Get the source code for context analysis
+        source_code = self._get_source_code_for_location(source_location)
+        if not source_code:
+            return str(target_value)
+            
+        # Find the AST call node at this location
+        call_node = self._find_call_node_at_line(source_code, source_location['lineno'])
+        if not call_node:
+            return str(target_value)
+            
+        # Get available parameters in the current context
+        available_params = get_available_parameters(call_node, source_code)
+        
+        # Try to find a meaningful symbolic expression
+        symbolic_expr = self._create_symbolic_expression(target_value, available_params)
+        
+        if config.DEBUG_MODE:
+            print(f"[ModelPlanner] Generated symbolic expression for {module_name}: {symbolic_expr}")
+            
+        return symbolic_expr
+
+    def _get_source_code_for_location(self, source_location: dict) -> str:
+        """Get source code for the given location (placeholder implementation)."""
+        # In a real implementation, this would read the source file
+        # For now, we return an empty string since we don't have file access
+        return ""
+
+    def _create_mock_frame_info(self, source_location: dict, module_name: str) -> object:
+        """Create a mock frame info object for context analysis."""
+        class MockFrameInfo:
+            def __init__(self, lineno, function_name):
+                self.lineno = lineno
+                self.function = function_name
+                self.code_context = [f"# Mock frame for {module_name} at line {lineno}"]
+                
+        # Extract function name from module path (e.g., "Net.conv1" -> "Net")
+        function_name = module_name.split('.')[0] if '.' in module_name else "__init__"
+        return MockFrameInfo(source_location['lineno'], function_name)
+
+    def _find_call_node_at_line(self, source_code: str, lineno: int):
+        """Find the AST call node at the given line number."""
+        try:
+            tree = ast.parse(source_code)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and 
+                    hasattr(node, 'lineno') and 
+                    node.lineno == lineno):
+                    return node
+        except (SyntaxError, AttributeError):
+            pass
+        return None
+
+    def _create_symbolic_expression(self, target_value: int, available_params: list) -> str:
+        """
+        Create a symbolic expression that evaluates to the target value.
+        Tries to use available parameters with common multipliers.
+        """
+        if not available_params:
+            return str(target_value)
+            
+        # Common neural network parameter patterns
+        common_params = ['in_channels', 'out_channels', 'planes', 'width', 'depth', 'expansion']
+        
+        # Try to match available params with common patterns
+        for param in available_params:
+            if param in common_params:
+                # Try to find a multiplier that makes sense
+                for multiplier in [1, 2, 4, 8, 16, 32, 64]:
+                    if target_value % multiplier == 0:
+                        base_value = target_value // multiplier
+                        # If base value is reasonable, use it
+                        if 8 <= base_value <= 1024:
+                            return f"{param} * {multiplier}"
+                
+        # Fallback: try to use the first parameter with a multiplier
+        first_param = available_params[0]
+        for multiplier in [1, 2, 4, 8]:
+            if target_value % multiplier == 0:
+                base_value = target_value // multiplier
+                if 8 <= base_value <= 1024:
+                    return f"{first_param} * {multiplier}"
+        
+        # Final fallback: just return the target value as string
+        return str(target_value)
