@@ -239,8 +239,23 @@ def save_plan_to_file(model_name: str, status: str, plan: dict, details: dict):
 
     with open(filepath, 'w') as f:
         json.dump(report, f, indent=4, cls=CustomEncoder)
-        if config.DEBUG_MODE:
-            print(f"[Utils] Successfully saved mutation plan to: {filepath}")
+    if config.DEBUG_MODE:
+        print(f"[Utils] Successfully saved mutation plan to: {filepath}")
+
+    # Verify the file was actually created
+    if config.DEBUG_MODE:
+        if os.path.exists(filepath):
+            print(f"[Utils] CONFIRMED: Mutation plan file exists at {filepath}")
+            # Check file size to ensure it's not empty
+            file_size = os.path.getsize(filepath)
+            print(f"[Utils] Mutation plan file size: {file_size} bytes")
+        else:
+            print(f"[Utils] ERROR: Mutation plan file was not created at {filepath}")
+            # List directory contents to debug
+            if os.path.exists(output_dir):
+                print(f"[Utils] Directory contents of {output_dir}: {os.listdir(output_dir)}")
+            else:
+                print(f"[Utils] ERROR: Output directory {output_dir} does not exist")
 
 
 def is_top_level_net_context(frame_info, source_code: str) -> bool:

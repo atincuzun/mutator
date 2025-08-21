@@ -4,7 +4,7 @@ import os
 # List of specific models to mutate (leave empty to mutate all)
 SPECIFIC_MODELS = ["ResNet"]
 
-DEBUG_MODE = True
+DEBUG_MODE = False
 # When True, keeps temporary model source files for debugging.
 KEEP_TEMP_MODEL_FILES = False
 NUM_ATTEMPTS_PER_MODEL = 110
@@ -119,13 +119,15 @@ TOP_LEVEL_CLASS_PATTERNS = ['Net']
 
 # Mutation mode configuration
 # Options: 'auto' (context-aware), 'always_symbolic', 'always_fixed'
-MUTATION_MODE = 'always_fixed'
+MUTATION_MODE = 'always_symbolic'
 
 # Symbolic mutation weights (probability distribution for symbolic vs fixed mutations)
 # Only used when MUTATION_MODE is 'auto'
+# For your use case, set symbolic weight to 0.9 to ensure most mutations use symbolic expressions
+# This will prevent dimensional mismatches in helper blocks like BasicBlock
 SYMBOLIC_MUTATION_WEIGHTS = {
-    'symbolic': 0.0,   # 0% chance of symbolic mutations
-    'fixed': 1.0       # 100% chance of fixed-number mutations
+    'symbolic': 1.0,   # 100% chance of symbolic mutations
+    'fixed': 0.0       # 0% chance of fixed-number mutations
 }
 
 # Available symbolic operations for parameter-based mutations

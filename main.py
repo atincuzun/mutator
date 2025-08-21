@@ -199,6 +199,8 @@ def run_single_mutation(worker_args):
         # Use LEMUR loader with specialized parameters
         with ModuleSourceTracer(model_source) as tracer:
             original_model = load_lemur_model(model_source)
+        # Extract temp module info for cleanup
+        temp_module_info = getattr(original_model, '_temp_module_info', None)
         source_map = tracer.create_source_map(original_model)
 
         planner = ModelPlanner(original_model, source_map=source_map, search_depth=config.PRODUCER_SEARCH_DEPTH)
@@ -301,11 +303,31 @@ def run_single_mutation(worker_args):
         # Save to nn-dataset repository
         # Use nn-dataset hashing (whitespace-insensitive) for consistency
         checksum = uuid4(modified_code)
-        # Add timestamp to ensure unique filenames even for identical mutations
-        timestamp = int(time.time() * 1000)  # Millisecond precision
-        # Use configurable output root from config
+        
+        # Check if this exact mutation already exists
         model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
         os.makedirs(model_dir, exist_ok=True)
+        
+        # Look for existing files with this checksum
+        existing_files = [f for f in os.listdir(model_dir) 
+                         if f.startswith(f"mutated_{checksum}_") and f.endswith(".py")]
+
+        if existing_files:
+            # Cleanup temp files before returning
+            if hasattr(original_model, '_temp_module_info'):
+                tn, tp = getattr(original_model, '_temp_module_info')
+                cleanup_temp_module(tn, tp)
+            if 'temp_module_info' in locals() and temp_module_info:
+                tn, tp = temp_module_info
+                cleanup_temp_module(tn, tp)
+                
+            if config.DEBUG_MODE:
+                print(f"[Main] Skipping duplicate mutation: {checksum} already exists at {existing_files[0]}")
+            # Return a special status for duplicate
+            return 'duplicate', {"path": os.path.join(model_dir, existing_files[0]), "checksum": checksum}
+        
+        # Only generate timestamp and save if it's a new unique mutation
+        timestamp = int(time.time() * 1000)  # Millisecond precision
         model_path = os.path.join(model_dir, f"mutated_{checksum}_{timestamp}.py")
         
         with open(model_path, 'w') as f:
@@ -364,6 +386,12 @@ def run_single_mutation(worker_args):
         if 'original_model' in locals() and original_model and hasattr(original_model, '_temp_module_info'):
             tn, tp = getattr(original_model, '_temp_module_info')
             cleanup_temp_module(tn, tp)
+        
+        # Ensure temp files are cleaned up in all error cases
+        if 'temp_module_info' in locals() and temp_module_info:
+            tn, tp = temp_module_info
+            cleanup_temp_module(tn, tp)
+            
         return status, None
 
 if __name__ == "__main__":

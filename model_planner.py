@@ -7,6 +7,7 @@ import operator
 import hashlib
 import os
 import ast
+import re
 from . import config
 import inspect
 from .utils import is_block_definition_context, is_top_level_net_context, get_available_parameters
@@ -150,32 +151,75 @@ class ModelPlanner:
         consumers, propagators = self._find_downstream_dependencies(mutation_group)
         current_plan = {}
         
+        # Calculate scaling factor for the mutation
+        scaling_factor = new_dim / original_dim
+        
+        # Decide whether to use symbolic or fixed-number for the entire mutation group
+        use_symbolic = self._should_use_symbolic_mutation_for_group(mutation_group)
+        symbolic_expression = None
+        
+        # If using symbolic, find common parameters and generate a single expression
+        if use_symbolic:
+            common_params = self._find_common_parameters(mutation_group)
+            node_symbolic_expressions = {}
+            
+            if common_params:
+                symbolic_expression = self._generate_symbolic_expression_for_group(common_params, scaling_factor)
+            else:
+                # Instead of falling back to fixed-number, try to generate individual symbolic expressions
+                for node in mutation_group:
+                    module_name = node.target
+                    symbolic_expr = self._generate_symbolic_expression(module_name, new_dim)
+                    # Check if the symbolic expression is actually symbolic (not just a number)
+                    if symbolic_expr != str(new_dim):
+                        node_symbolic_expressions[module_name] = symbolic_expr
+                    else:
+                        node_symbolic_expressions[module_name] = None
+        
+        # For debugging - print the symbolic expression being used
+        if use_symbolic and symbolic_expression and config.DEBUG_MODE:
+            print(f"[ModelPlanner] Using symbolic expression for group: {symbolic_expression}")
+        
         def get_base_plan(node_target):
             return {"mutation_type": "dimension", "new_out": None, "new_in": None, "source_location": self.source_map.get(node_target)}
 
-        # Unified propagation: apply the same mutation pattern throughout
+        # Unified propagation: apply the same mutation pattern throughout the group
         for node in mutation_group:
             if node.target == self.final_layer_name:
                 continue
             if node.target not in current_plan:
                 current_plan[node.target] = get_base_plan(node.target)
             
-            # Check if this mutation should be symbolic based on context
-            if self._should_use_symbolic_mutation(node.target):
+            if use_symbolic and symbolic_expression:
                 current_plan[node.target]["symbolic"] = True
-                current_plan[node.target]["symbolic_expression"] = self._generate_symbolic_expression(node.target, new_dim)
+                current_plan[node.target]["symbolic_expression"] = symbolic_expression
             else:
-                current_plan[node.target]["symbolic"] = False
-                current_plan[node.target]["new_out"] = new_dim
+                if node.target in node_symbolic_expressions and node_symbolic_expressions[node.target] is not None:
+                    # Use the node-specific symbolic expression
+                    current_plan[node.target]["symbolic"] = True
+                    current_plan[node.target]["symbolic_expression"] = node_symbolic_expressions[node.target]
+                else:
+                    # Fall back to fixed-number for this node
+                    current_plan[node.target]["symbolic"] = False
+                    current_plan[node.target]["new_out"] = new_dim
 
         for consumer_node in consumers:
             if consumer_node.target not in current_plan:
                 current_plan[consumer_node.target] = get_base_plan(consumer_node.target)
             
-            # Check if this mutation should be symbolic based on context
-            if self._should_use_symbolic_mutation(consumer_node.target):
-                current_plan[consumer_node.target]["symbolic"] = True
-                current_plan[consumer_node.target]["symbolic_expression"] = self._generate_symbolic_expression(consumer_node.target, new_dim)
+            if use_symbolic:
+                if symbolic_expression:
+                    # Use the common symbolic expression
+                    current_plan[consumer_node.target]["symbolic"] = True
+                    current_plan[consumer_node.target]["symbolic_expression"] = symbolic_expression
+                elif consumer_node.target in node_symbolic_expressions and node_symbolic_expressions[consumer_node.target] is not None:
+                    # Use the node-specific symbolic expression
+                    current_plan[consumer_node.target]["symbolic"] = True
+                    current_plan[consumer_node.target]["symbolic_expression"] = node_symbolic_expressions[consumer_node.target]
+                else:
+                    # Fall back to fixed-number for this node
+                    current_plan[consumer_node.target]["symbolic"] = False
+                    current_plan[consumer_node.target]["new_in"] = new_dim
             else:
                 current_plan[consumer_node.target]["symbolic"] = False
                 current_plan[consumer_node.target]["new_in"] = new_dim
@@ -184,10 +228,19 @@ class ModelPlanner:
             if propagator_node.target not in current_plan:
                 current_plan[propagator_node.target] = get_base_plan(propagator_node.target)
             
-            # Check if this mutation should be symbolic based on context
-            if self._should_use_symbolic_mutation(propagator_node.target):
-                current_plan[propagator_node.target]["symbolic"] = True
-                current_plan[propagator_node.target]["symbolic_expression"] = self._generate_symbolic_expression(propagator_node.target, new_dim)
+            if use_symbolic:
+                if symbolic_expression:
+                    # Use the common symbolic expression
+                    current_plan[propagator_node.target]["symbolic"] = True
+                    current_plan[propagator_node.target]["symbolic_expression"] = symbolic_expression
+                elif propagator_node.target in node_symbolic_expressions and node_symbolic_expressions[propagator_node.target] is not None:
+                    # Use the node-specific symbolic expression
+                    current_plan[propagator_node.target]["symbolic"] = True
+                    current_plan[propagator_node.target]["symbolic_expression"] = node_symbolic_expressions[propagator_node.target]
+                else:
+                    # Fall back to fixed-number for this node
+                    current_plan[propagator_node.target]["symbolic"] = False
+                    current_plan[propagator_node.target]["new_in"] = new_dim
             else:
                 current_plan[propagator_node.target]["symbolic"] = False
                 current_plan[propagator_node.target]["new_in"] = new_dim
@@ -1222,28 +1275,32 @@ class ModelPlanner:
                 ]
                 expression = random.choice(patterns)
             
-            # Try to evaluate the expression safely to check if it's reasonable
-            try:
-                # Create a mock environment with reasonable parameter values
-                # Use the target_value as a baseline for parameter values
-                mock_env = {}
-                for param in set(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', expression)):
-                    if param not in ['and', 'or', 'not', 'if', 'else', 'True', 'False', 'None']:
-                        # Assign a reasonable value based on target_value
-                        mock_env[param] = max(8, min(1024, target_value // random.randint(1, 8)))
+                # For symbolic expressions, we don't need to validate the exact numeric value
+                # since it will be evaluated at runtime with actual parameter values
+                # Instead, we validate the expression structure and context appropriateness
                 
-                # Evaluate the expression
-                result = eval(expression, {}, mock_env)
+                # Check if the expression is syntactically valid
+                try:
+                    ast.parse(expression)
+                except SyntaxError:
+                    continue
                 
-                # Check if the result is close to the target value and reasonable
-                if (isinstance(result, (int, float)) and 
-                    result > 0 and 
-                    abs(result - target_value) <= target_value * 0.5 and  # Allow 50% variance
-                    8 <= result <= 2048):  # Reasonable range for neural network parameters
-                    return expression
-                    
-            except (SyntaxError, NameError, TypeError, ZeroDivisionError, ValueError):
-                continue
+                # Check if the expression uses parameters that are likely available in context
+                used_params = set(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', expression))
+                used_params -= set(['and', 'or', 'not', 'if', 'else', 'True', 'False', 'None'])
+                
+                # Ensure at least one parameter is from the available context
+                if not any(param in available_params for param in used_params):
+                    continue
+                
+                # Check for common problematic patterns
+                if '//' in expression and '0' in expression:
+                    continue  # Avoid division by zero
+                
+                if config.DEBUG_MODE:
+                    print(f"[ModelPlanner] Accepted symbolic expression: {expression}")
+                
+                return expression
         
         # Fallback: try simple expressions with common parameters
         for param in prioritized_params:
@@ -1266,3 +1323,109 @@ class ModelPlanner:
         
         # Final fallback: return target value as string
         return str(target_value)
+    
+    def _should_use_symbolic_mutation_for_group(self, mutation_group) -> bool:
+        """
+        Determine if symbolic mutation should be used for the entire mutation group.
+        Uses configuration settings to make a consistent decision for the whole group.
+        """
+        # Check configuration mode first
+        if config.MUTATION_MODE == 'always_symbolic':
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using symbolic mutation for group (always_symbolic mode)")
+            return True
+            
+        if config.MUTATION_MODE == 'always_fixed':
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using fixed-number mutation for group (always_fixed mode)")
+            return False
+            
+        # For 'auto' mode, use weighted probability from SYMBOLIC_MUTATION_WEIGHTS
+        choices = ['symbolic', 'fixed']
+        weights = [config.SYMBOLIC_MUTATION_WEIGHTS['symbolic'], config.SYMBOLIC_MUTATION_WEIGHTS['fixed']]
+        decision = random.choices(choices, weights=weights, k=1)[0]
+        
+        if decision == 'symbolic':
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using symbolic mutation for group (weighted probability)")
+            return True
+        else:
+            if config.DEBUG_MODE:
+                print(f"[ModelPlanner] Using fixed-number mutation for group (weighted probability)")
+            return False
+
+    def _find_common_parameters(self, mutation_group) -> list:
+        """
+        Find parameters that are common across all nodes in the mutation group.
+        This helps ensure consistent symbolic expressions across the group.
+        """
+        common_params = None
+        
+        for node in mutation_group:
+            module_name = node.target
+            if module_name not in self.source_map:
+                continue
+                
+            source_location = self.source_map[module_name]
+            if not source_location or 'lineno' not in source_location:
+                continue
+                
+            # Get the source code for context analysis
+            source_code = self._get_source_code_for_location(source_location)
+            if not source_code:
+                continue
+                
+            # Find the AST call node at this location
+            call_node = self._find_call_node_at_line(source_code, source_location['lineno'])
+            if not call_node:
+                continue
+                
+            # Get available parameters in the current context
+            available_params = get_available_parameters(call_node, source_code)
+            
+            if common_params is None:
+                common_params = set(available_params)
+            else:
+                common_params = common_params.intersection(set(available_params))
+        
+        # Return common parameters as a list, prioritizing common neural network parameters
+        if common_params is None:
+            return []
+            
+        # Prioritize common neural network parameter patterns
+        priority_params = ['in_channels', 'out_channels', 'planes', 'width', 'depth', 'expansion']
+        sorted_params = sorted(common_params, key=lambda x: (x not in priority_params, x))
+        
+        return sorted_params
+
+    def _generate_symbolic_expression_for_group(self, common_params: list, target_value: int) -> str:
+        """
+        Generate a single symbolic expression for the entire mutation group.
+        Ensures dimensional consistency across the group by using the same expression.
+        """
+        if not common_params:
+            return str(target_value)
+            
+        # Use the most relevant common parameter (prioritize neural network patterns)
+        priority_params = ['in_channels', 'out_channels', 'planes', 'width', 'depth', 'expansion']
+        relevant_param = None
+        for param in priority_params:
+            if param in common_params:
+                relevant_param = param
+                break
+        if relevant_param is None:
+            relevant_param = common_params[0]
+        
+        # Generate a simple expression using the relevant parameter
+        # Try to find a multiplier that gets close to the target value
+        for multiplier in [2, 4, 8, 16, 32, 64, 128]:
+            if target_value % multiplier == 0:
+                return f"{relevant_param} * {multiplier}"
+        
+        # Try division
+        for divisor in [2, 4, 8, 16, 32, 64, 128]:
+            if target_value * divisor <= 1024:  # Reasonable channel limit
+                return f"{relevant_param} * {target_value} // {divisor}"
+        
+        # Fallback to a simple expression
+        return f"{relevant_param} * 2"
