@@ -154,31 +154,89 @@ class ModelPlanner:
         # Calculate scaling factor for the mutation
         scaling_factor = new_dim / original_dim
         
-        # Decide whether to use symbolic or fixed-number for the entire mutation group
+        # Decide whether to attempt symbolic expressions
         use_symbolic = self._should_use_symbolic_mutation_for_group(mutation_group)
-        symbolic_expression = None
-        
-        # If using symbolic, find common parameters and generate a single expression
-        if use_symbolic:
-            common_params = self._find_common_parameters(mutation_group)
-            node_symbolic_expressions = {}
-            
-            if common_params:
-                symbolic_expression = self._generate_symbolic_expression_for_group(common_params, scaling_factor)
+
+        # Helper cache for available params per module
+        available_param_cache = {}
+
+        def _get_available_params(module_name):
+            if module_name in available_param_cache:
+                return available_param_cache[module_name]
+            source_location = self.source_map.get(module_name)
+            if not source_location:
+                available_param_cache[module_name] = []
+                return []
+            source_code = self._get_source_code_for_location(source_location)
+            if not source_code:
+                available_param_cache[module_name] = []
+                return []
+            call_node = self._find_call_node_at_line(source_code, source_location.get('lineno', -1))
+            if not call_node:
+                available_param_cache[module_name] = []
+                return []
+            params = get_available_parameters(call_node, source_code)
+            available_param_cache[module_name] = params
+            return params
+
+        def _synthesize_symbolic(old_dim: int, new_dim_val: int, params: list) -> str | None:
+            """Deterministic simple expression builder.
+            Always returns an expression referencing one param if possible.
+            Order of preference:
+              1. param (if equals new)
+              2. param * k (exact)
+              3. param // k (exact shrink, small k)
+              4. (param * p)//q (p,q <= 8)
+              5. Fallback: (param * new)//param
+            """
+            if not params or new_dim_val <= 0:
+                return None
+            # Prioritize common nn param names for readability
+            priority = ['planes','in_channels','out_channels','width','channels','features']
+            sorted_params = sorted(params, key=lambda x: (x not in priority, len(x), x))
+            base_param = sorted_params[0]
+            # Without knowing runtime param value, we still guarantee correctness using fallback.
+            # Try nicer forms only if we can infer ratio from old_dim.
+            if old_dim and old_dim > 0:
+                # 1. direct multiply
+                if new_dim_val == old_dim:
+                    return base_param
+                if new_dim_val % old_dim == 0:
+                    k = new_dim_val // old_dim
+                    if k <= 32:
+                        return f"{base_param} * {k}"
+                # 2. division
+                if old_dim % new_dim_val == 0:
+                    k = old_dim // new_dim_val
+                    if k <= 32:
+                        return f"{base_param} // {k}"
+                # 3. rational (param * p)//q approximating new_dim
+                # We cannot know base_param's value here (could differ from old_dim if different identifier),
+                # so skip to fallback to avoid incorrect mapping.
+            # 4. fallback guaranteed symbolic
+            return f"({base_param} * {new_dim_val}) // {base_param}"
+
+        # Collect original dims for each node (producer out dimension used for producers, in dimension for consumers/propagators)
+        original_dims = {}
+        for node in mutation_group:
+            mod = self.submodules.get(node.target)
+            if isinstance(mod, nn.Conv2d):
+                original_dims[node.target] = mod.out_channels
+            elif isinstance(mod, nn.Linear):
+                original_dims[node.target] = mod.out_features
             else:
-                # Instead of falling back to fixed-number, try to generate individual symbolic expressions
-                for node in mutation_group:
-                    module_name = node.target
-                    symbolic_expr = self._generate_symbolic_expression(module_name, new_dim)
-                    # Check if the symbolic expression is actually symbolic (not just a number)
-                    if symbolic_expr != str(new_dim):
-                        node_symbolic_expressions[module_name] = symbolic_expr
-                    else:
-                        node_symbolic_expressions[module_name] = None
-        
-        # For debugging - print the symbolic expression being used
-        if use_symbolic and symbolic_expression and config.DEBUG_MODE:
-            print(f"[ModelPlanner] Using symbolic expression for group: {symbolic_expression}")
+                original_dims[node.target] = None
+        for dep_list in (consumers, propagators):
+            for n in dep_list:
+                mod = self.submodules.get(n.target)
+                if isinstance(mod, nn.Conv2d):
+                    original_dims[n.target] = mod.in_channels
+                elif isinstance(mod, nn.Linear):
+                    original_dims[n.target] = mod.in_features
+                elif isinstance(mod, (nn.BatchNorm2d, nn.LayerNorm)):
+                    original_dims[n.target] = getattr(mod, 'num_features', None)
+                else:
+                    original_dims[n.target] = None
         
         def get_base_plan(node_target):
             return {"mutation_type": "dimension", "new_out": None, "new_in": None, "source_location": self.source_map.get(node_target)}
@@ -189,61 +247,49 @@ class ModelPlanner:
                 continue
             if node.target not in current_plan:
                 current_plan[node.target] = get_base_plan(node.target)
-            
-            if use_symbolic and symbolic_expression:
-                current_plan[node.target]["symbolic"] = True
-                current_plan[node.target]["symbolic_expression"] = symbolic_expression
-            else:
-                if node.target in node_symbolic_expressions and node_symbolic_expressions[node.target] is not None:
-                    # Use the node-specific symbolic expression
+            # Always set numeric new_out for producer nodes (they change their output dim)
+            current_plan[node.target]["new_out"] = new_dim
+            if use_symbolic:
+                params = _get_available_params(node.target)
+                sym_expr = _synthesize_symbolic(original_dims.get(node.target), new_dim, params)
+                if sym_expr:
                     current_plan[node.target]["symbolic"] = True
-                    current_plan[node.target]["symbolic_expression"] = node_symbolic_expressions[node.target]
+                    current_plan[node.target]["symbolic_expression"] = sym_expr
                 else:
-                    # Fall back to fixed-number for this node
                     current_plan[node.target]["symbolic"] = False
-                    current_plan[node.target]["new_out"] = new_dim
+            else:
+                current_plan[node.target]["symbolic"] = False
 
         for consumer_node in consumers:
             if consumer_node.target not in current_plan:
                 current_plan[consumer_node.target] = get_base_plan(consumer_node.target)
-            
+            # Set numeric new_in
+            current_plan[consumer_node.target]["new_in"] = new_dim
             if use_symbolic:
-                if symbolic_expression:
-                    # Use the common symbolic expression
+                params = _get_available_params(consumer_node.target)
+                sym_expr = _synthesize_symbolic(original_dims.get(consumer_node.target), new_dim, params)
+                if sym_expr:
                     current_plan[consumer_node.target]["symbolic"] = True
-                    current_plan[consumer_node.target]["symbolic_expression"] = symbolic_expression
-                elif consumer_node.target in node_symbolic_expressions and node_symbolic_expressions[consumer_node.target] is not None:
-                    # Use the node-specific symbolic expression
-                    current_plan[consumer_node.target]["symbolic"] = True
-                    current_plan[consumer_node.target]["symbolic_expression"] = node_symbolic_expressions[consumer_node.target]
+                    current_plan[consumer_node.target]["symbolic_expression"] = sym_expr
                 else:
-                    # Fall back to fixed-number for this node
                     current_plan[consumer_node.target]["symbolic"] = False
-                    current_plan[consumer_node.target]["new_in"] = new_dim
             else:
                 current_plan[consumer_node.target]["symbolic"] = False
-                current_plan[consumer_node.target]["new_in"] = new_dim
 
         for propagator_node in propagators:
             if propagator_node.target not in current_plan:
                 current_plan[propagator_node.target] = get_base_plan(propagator_node.target)
-            
+            current_plan[propagator_node.target]["new_in"] = new_dim
             if use_symbolic:
-                if symbolic_expression:
-                    # Use the common symbolic expression
+                params = _get_available_params(propagator_node.target)
+                sym_expr = _synthesize_symbolic(original_dims.get(propagator_node.target), new_dim, params)
+                if sym_expr:
                     current_plan[propagator_node.target]["symbolic"] = True
-                    current_plan[propagator_node.target]["symbolic_expression"] = symbolic_expression
-                elif propagator_node.target in node_symbolic_expressions and node_symbolic_expressions[propagator_node.target] is not None:
-                    # Use the node-specific symbolic expression
-                    current_plan[propagator_node.target]["symbolic"] = True
-                    current_plan[propagator_node.target]["symbolic_expression"] = node_symbolic_expressions[propagator_node.target]
+                    current_plan[propagator_node.target]["symbolic_expression"] = sym_expr
                 else:
-                    # Fall back to fixed-number for this node
                     current_plan[propagator_node.target]["symbolic"] = False
-                    current_plan[propagator_node.target]["new_in"] = new_dim
             else:
                 current_plan[propagator_node.target]["symbolic"] = False
-                current_plan[propagator_node.target]["new_in"] = new_dim
 
         self.plan = current_plan
         if config.DEBUG_MODE:

@@ -251,7 +251,7 @@ def run_single_mutation(worker_args):
             raise RuntimeError(f"Model verification failed: {str(e)}")
         
         code_mutator = CodeMutator(model_source)
-        
+
         for full_module_name, details in plan.items():
             location = details.get("source_location")
             if not location:
@@ -259,35 +259,38 @@ def run_single_mutation(worker_args):
 
             mutation_type = details.get("mutation_type", "dimension")
             module = original_model.get_submodule(full_module_name)
-            
+
             if mutation_type == "dimension":
-                # Always use fixed-value mutations when in always_fixed mode
                 arg_to_change = None
-                if isinstance(module, nn.Linear): 
+                if isinstance(module, nn.Linear):
                     arg_to_change = 'out_features' if details.get('new_out') is not None else 'in_features'
-                elif isinstance(module, nn.Conv2d): 
+                elif isinstance(module, nn.Conv2d):
                     arg_to_change = 'out_channels' if details.get('new_out') is not None else 'in_channels'
-                elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)): 
+                elif isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)):
                     arg_to_change = 'num_features'
-                
-                # Force fixed-value mutation regardless of symbolic flag
-                new_value = details.get('new_out') or details.get('new_in')
-                if arg_to_change and new_value is not None:
-                    code_mutator.schedule_modification(location, arg_to_change, new_value)
+
+                if details.get('symbolic') and details.get('symbolic_expression') and arg_to_change:
+                    code_mutator.schedule_symbolic_modification(location, arg_to_change, details['symbolic_expression'])
                     if config.DEBUG_MODE:
-                        print(f"Scheduled fixed-value modification for {full_module_name}: {arg_to_change} = {new_value}")
-            
+                        print(f"Scheduled symbolic modification for {full_module_name}: {arg_to_change} = {details['symbolic_expression']}")
+                else:
+                    new_value = details.get('new_out') or details.get('new_in')
+                    if arg_to_change and new_value is not None:
+                        code_mutator.schedule_modification(location, arg_to_change, new_value)
+                        if config.DEBUG_MODE:
+                            print(f"Scheduled fixed-value modification for {full_module_name}: {arg_to_change} = {new_value}")
+
             elif mutation_type == "activation":
                 new_activation = details.get('new_activation')
                 if new_activation:
                     code_mutator.schedule_activation_modification(location, new_activation)
-            
+
             elif mutation_type == "layer_type":
                 new_layer_type = details.get('new_layer_type')
                 mutation_params = details.get('mutation_params', {})
                 if new_layer_type:
                     code_mutator.schedule_layer_type_modification(location, new_layer_type, mutation_params)
-            
+
             elif mutation_type == "kernel_size":
                 new_kernel_size = details.get('new_kernel_size')
                 if new_kernel_size:
