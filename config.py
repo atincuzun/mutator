@@ -66,8 +66,8 @@ LAYER_TYPE_MUTATIONS = {
 
 # Mutation type weights (probability distribution)
 MUTATION_TYPE_WEIGHTS = {
-    'dimension': 1.0,       # 100% - only dimension mutations (in/out sizes)
-    'activation': 0.0,      # 0% - no activation function mutations
+    'dimension': 0.0,       # 100% - only dimension mutations (in/out sizes)
+    'activation': 1.0,      # 0% - no activation function mutations
     'layer_type': 0.0,      # 0% - no layer type mutations
     'kernel_size': 0.0,     # 0% - no kernel size mutations
     'stride': 0.0,          # 0% - no stride mutations

@@ -19,9 +19,10 @@ import ab.nn.api as nn_dataset
 from ab.nn.util.Util import uuid4  # use canonical hashing
 
 from mutator import config
-from .utils import save_plan_to_file, ModuleSourceTracer
-from .model_planner import ModelPlanner
-from .code_mutator import CodeMutator
+from mutator.utils import save_plan_to_file, ModuleSourceTracer
+from mutator.model_planner import ModelPlanner
+from mutator.code_mutator import CodeMutator
+from mutator.unique_mutation_tracker import get_mutation_tracker
 
 warnings.filterwarnings("ignore")
 
@@ -303,13 +304,41 @@ def run_single_mutation(worker_args):
         checksum = uuid4(modified_code)
         # Add timestamp to ensure unique filenames even for identical mutations
         timestamp = int(time.time() * 1000)  # Millisecond precision
+        
+        # Extract mutation type from plan for filename prefix
+        mutation_type = "unknown"
+        if plan:
+            # Get the first mutation type from the plan
+            for details in plan.values():
+                if "mutation_type" in details:
+                    mutation_type = details["mutation_type"]
+                    break
+        
+        # Check if this mutation is unique using the tracker
+        mutation_tracker = get_mutation_tracker()
+        if not mutation_tracker.is_unique_mutation(checksum):
+            if config.DEBUG_MODE:
+                print(f"  -> Skipping duplicate mutation with checksum: {checksum}")
+            # cleanup temp module for duplicate mutation
+            if hasattr(original_model, '_temp_module_info'):
+                tn, tp = getattr(original_model, '_temp_module_info')
+                cleanup_temp_module(tn, tp)
+            return 'skipped_duplicate', None
+        
+        # Register this unique mutation
+        mutation_tracker.register_mutation(checksum)
+        
         # Use configurable output root from config
         model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
         os.makedirs(model_dir, exist_ok=True)
-        model_path = os.path.join(model_dir, f"mutated_{checksum}_{timestamp}.py")
+        model_path = os.path.join(model_dir, f"{model_name}-ast-{mutation_type}-{checksum}.py")
         
         with open(model_path, 'w') as f:
             f.write(modified_code)
+        
+        if config.DEBUG_MODE:
+            print(f"  -> Saved unique mutation: {model_path}")
+            print(f"  -> Total unique mutations so far: {mutation_tracker.get_unique_count()}")
         
         # Optionally save mutated model to LEMUR DB (nn-dataset)
         if getattr(config, 'SAVE_MUTATED_TO_DB', False):
