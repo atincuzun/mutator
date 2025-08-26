@@ -109,14 +109,24 @@ class DimensionPlanner:
         
         # Decide whether to attempt symbolic expressions
         use_symbolic = self._should_use_symbolic_mutation_for_group(mutation_group)
+        group_expr: Optional[str] = None
+        if use_symbolic:
+            common_params = self._find_common_parameters(mutation_group)
+            group_expr = self._generate_symbolic_expression_for_group(common_params, new_dim)
 
         # Collect original dims for each node
         original_dims = self._collect_original_dimensions(mutation_group, consumers, propagators)
         
         # Unified propagation: apply the same mutation pattern throughout the group
-        self._apply_mutations_to_producers(mutation_group, current_plan, new_dim, use_symbolic, original_dims)
-        self._apply_mutations_to_consumers(consumers, current_plan, new_dim, use_symbolic, original_dims)
-        self._apply_mutations_to_propagators(propagators, current_plan, new_dim, use_symbolic, original_dims)
+        self._apply_mutations_to_producers(
+            mutation_group, current_plan, new_dim, use_symbolic, original_dims, group_expr
+        )
+        self._apply_mutations_to_consumers(
+            consumers, current_plan, new_dim, use_symbolic, original_dims, group_expr
+        )
+        self._apply_mutations_to_propagators(
+            propagators, current_plan, new_dim, use_symbolic, original_dims, group_expr
+        )
 
         self.model_planner.plan = current_plan
         if config.DEBUG_MODE:
@@ -334,7 +344,8 @@ class DimensionPlanner:
                                     current_plan: Dict[str, Any], 
                                     new_dim: int, 
                                     use_symbolic: bool, 
-                                    original_dims: Dict[str, Optional[int]]):
+                                    original_dims: Dict[str, Optional[int]],
+                                    group_expr: Optional[str]):
         """Apply mutations to producer nodes."""
         for node in mutation_group:
             if hasattr(self.model_planner, 'final_layer_name') and node.target == self.model_planner.final_layer_name:
@@ -347,13 +358,17 @@ class DimensionPlanner:
             current_plan[node.target]["new_out"] = new_dim
             
             if use_symbolic:
-                params = self._get_available_params(node.target)
-                sym_expr = self._synthesize_symbolic(original_dims.get(node.target), new_dim, params)
-                if sym_expr:
+                if group_expr:
                     current_plan[node.target]["symbolic"] = True
-                    current_plan[node.target]["symbolic_expression"] = sym_expr
+                    current_plan[node.target]["symbolic_expression"] = group_expr
                 else:
-                    current_plan[node.target]["symbolic"] = False
+                    params = self._get_available_params(node.target)
+                    sym_expr = self._synthesize_symbolic(original_dims.get(node.target), new_dim, params)
+                    if sym_expr:
+                        current_plan[node.target]["symbolic"] = True
+                        current_plan[node.target]["symbolic_expression"] = sym_expr
+                    else:
+                        current_plan[node.target]["symbolic"] = False
             else:
                 current_plan[node.target]["symbolic"] = False
 
@@ -361,7 +376,8 @@ class DimensionPlanner:
                                     current_plan: Dict[str, Any], 
                                     new_dim: int, 
                                     use_symbolic: bool, 
-                                    original_dims: Dict[str, Optional[int]]):
+                                    original_dims: Dict[str, Optional[int]],
+                                    group_expr: Optional[str]):
         """Apply mutations to consumer nodes."""
         for consumer_node in consumers:
             if consumer_node.target not in current_plan:
@@ -371,13 +387,17 @@ class DimensionPlanner:
             current_plan[consumer_node.target]["new_in"] = new_dim
             
             if use_symbolic:
-                params = self._get_available_params(consumer_node.target)
-                sym_expr = self._synthesize_symbolic(original_dims.get(consumer_node.target), new_dim, params)
-                if sym_expr:
+                if group_expr:
                     current_plan[consumer_node.target]["symbolic"] = True
-                    current_plan[consumer_node.target]["symbolic_expression"] = sym_expr
+                    current_plan[consumer_node.target]["symbolic_expression"] = group_expr
                 else:
-                    current_plan[consumer_node.target]["symbolic"] = False
+                    params = self._get_available_params(consumer_node.target)
+                    sym_expr = self._synthesize_symbolic(original_dims.get(consumer_node.target), new_dim, params)
+                    if sym_expr:
+                        current_plan[consumer_node.target]["symbolic"] = True
+                        current_plan[consumer_node.target]["symbolic_expression"] = sym_expr
+                    else:
+                        current_plan[consumer_node.target]["symbolic"] = False
             else:
                 current_plan[consumer_node.target]["symbolic"] = False
 
@@ -385,7 +405,8 @@ class DimensionPlanner:
                                       current_plan: Dict[str, Any], 
                                       new_dim: int, 
                                       use_symbolic: bool, 
-                                      original_dims: Dict[str, Optional[int]]):
+                                      original_dims: Dict[str, Optional[int]],
+                                      group_expr: Optional[str]):
         """Apply mutations to propagator nodes."""
         for propagator_node in propagators:
             if propagator_node.target not in current_plan:
@@ -394,15 +415,79 @@ class DimensionPlanner:
             current_plan[propagator_node.target]["new_in"] = new_dim
             
             if use_symbolic:
-                params = self._get_available_params(propagator_node.target)
-                sym_expr = self._synthesize_symbolic(original_dims.get(propagator_node.target), new_dim, params)
-                if sym_expr:
+                if group_expr:
                     current_plan[propagator_node.target]["symbolic"] = True
-                    current_plan[propagator_node.target]["symbolic_expression"] = sym_expr
+                    current_plan[propagator_node.target]["symbolic_expression"] = group_expr
                 else:
-                    current_plan[propagator_node.target]["symbolic"] = False
+                    params = self._get_available_params(propagator_node.target)
+                    sym_expr = self._synthesize_symbolic(original_dims.get(propagator_node.target), new_dim, params)
+                    if sym_expr:
+                        current_plan[propagator_node.target]["symbolic"] = True
+                        current_plan[propagator_node.target]["symbolic_expression"] = sym_expr
+                    else:
+                        current_plan[propagator_node.target]["symbolic"] = False
             else:
                 current_plan[propagator_node.target]["symbolic"] = False
+
+    def _find_common_parameters(self, mutation_group: List[fx.Node]) -> List[str]:
+        """
+        Find parameters that are common across all nodes in the mutation group.
+        This helps ensure consistent symbolic expressions across the group.
+        """
+        common_params = None
+
+        for node in mutation_group:
+            module_name = node.target
+            if module_name not in self.model_planner.source_map:
+                continue
+
+            params = self._get_available_params(module_name)
+            if params is None:
+                continue
+
+            if common_params is None:
+                common_params = set(params)
+            else:
+                common_params = common_params.intersection(set(params))
+
+        # Return common parameters as a list, prioritizing common neural network parameters
+        if not common_params:
+            return []
+
+        priority_params = ['in_channels', 'out_channels', 'planes', 'width', 'depth', 'expansion']
+        sorted_params = sorted(common_params, key=lambda x: (x not in priority_params, x))
+        return list(sorted_params)
+
+    def _generate_symbolic_expression_for_group(self, common_params: List[str], target_value: int) -> str:
+        """
+        Generate a single symbolic expression for the entire mutation group.
+        Ensures dimensional consistency across the group by using the same expression.
+        """
+        if not common_params:
+            return str(target_value)
+
+        # Use the most relevant common parameter (prioritize neural network patterns)
+        priority_params = ['in_channels', 'out_channels', 'planes', 'width', 'depth', 'expansion']
+        relevant_param = None
+        for param in priority_params:
+            if param in common_params:
+                relevant_param = param
+                break
+        if relevant_param is None:
+            relevant_param = common_params[0]
+
+        # Try multiplier that divides target_value
+        for multiplier in [2, 4, 8, 16, 32, 64, 128]:
+            if target_value % multiplier == 0:
+                return f"{relevant_param} * {multiplier}"
+
+        # Try scaled expression that remains reasonable
+        for divisor in [2, 4, 8, 16, 32, 64, 128]:
+            if target_value * divisor <= 1024:
+                return f"{relevant_param} * {target_value} // {divisor}"
+
+        # Fallback simple expression
+        return f"{relevant_param} * 2"
 
     def _should_use_symbolic_mutation_for_group(self, mutation_group: List[fx.Node]) -> bool:
         """

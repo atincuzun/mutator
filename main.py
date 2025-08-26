@@ -20,10 +20,10 @@ from ab.nn.util.Util import uuid4  # use canonical hashing
 
 from mutator import config
 from mutator.utils import save_plan_to_file, ModuleSourceTracer
-from mutator.model_planner import ModelPlanner
+from mutator.planning import ModelPlanner
 from mutator.code_mutator import CodeMutator
-from mutator.unique_mutation_tracker import get_mutation_tracker
-from mutator.plan_uniqueness_tracker import get_plan_tracker
+from mutator.tracking.unique_mutation_tracker import get_mutation_tracker
+from mutator.tracking.plan_uniqueness_tracker import get_plan_tracker
 
 # Dataset parameters used throughout the system
 DATASET_PARAMS = {

@@ -89,6 +89,92 @@ class ModelPlanner:
             # Default input shape for common vision models
             self.input_shape = (3, 224, 224)
 
+    def _validate_spatial_change(self, module_name: str, new_params: dict) -> bool:
+        """Validate if mutation maintains valid spatial dimensions."""
+        if module_name not in self.spatial_tracker:
+            return True  # Skip validation if no dimension info
+
+        current_h, current_w = self.spatial_tracker[module_name]
+        input_h, input_w = current_h, current_w
+
+        module = self.submodules.get(module_name)
+        if module is None:
+            return True
+
+        # Extract current params from module
+        kernel_size = getattr(module, 'kernel_size', 1)
+        stride = getattr(module, 'stride', 1)
+        padding = getattr(module, 'padding', 0)
+        dilation = getattr(module, 'dilation', 1)
+
+        # Override with proposed new params
+        if 'kernel_size' in new_params:
+            kernel_size = new_params['kernel_size']
+        if 'stride' in new_params:
+            stride = new_params['stride']
+        if 'padding' in new_params:
+            padding = new_params['padding']
+        if 'dilation' in new_params:
+            dilation = new_params['dilation']
+
+        # Normalize to tuples
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size, kernel_size)
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        if isinstance(padding, int):
+            padding = (padding, padding)
+        if isinstance(dilation, int):
+            dilation = (dilation, dilation)
+
+        new_h = (input_h + 2 * padding[0] - dilation[0] * (kernel_size[0] - 1) - 1) // stride[0] + 1
+        new_w = (input_w + 2 * padding[1] - dilation[1] * (kernel_size[1] - 1) - 1) // stride[1] + 1
+
+        return new_h >= 1 and new_w >= 1
+
+    def _compute_spatial_dimensions(self):
+        """Compute spatial dimensions for all layers in the network."""
+        current_h, current_w = self.input_shape[1], self.input_shape[2]
+
+        for name, module in self.original_model.named_modules():
+            if name == '':
+                continue
+
+            # Store current dimensions
+            self.spatial_tracker[name] = (current_h, current_w)
+
+            # Update dimensions based on layer type
+            if isinstance(module, (nn.Conv2d, nn.MaxPool2d, nn.AvgPool2d)):
+                kernel_size = module.kernel_size
+                stride = module.stride
+                padding = module.padding
+                dilation = module.dilation
+
+                if isinstance(kernel_size, int):
+                    kernel_size = (kernel_size, kernel_size)
+                if isinstance(stride, int):
+                    stride = (stride, stride)
+                if isinstance(padding, int):
+                    padding = (padding, padding)
+                if isinstance(dilation, int):
+                    dilation = (dilation, dilation)
+
+                current_h = (current_h + 2 * padding[0] - dilation[0] * (kernel_size[0] - 1) - 1) // stride[0] + 1
+                current_w = (current_w + 2 * padding[1] - dilation[1] * (kernel_size[1] - 1) - 1) // stride[1] + 1
+
+                current_h = max(1, current_h)
+                current_w = max(1, current_w)
+            elif isinstance(module, (nn.AdaptiveAvgPool2d, nn.AdaptiveMaxPool2d)):
+                if isinstance(module.output_size, int):
+                    current_h = module.output_size
+                    current_w = module.output_size
+                else:
+                    current_h, current_w = module.output_size
+            elif isinstance(module, nn.Linear):
+                current_h, current_w = 1, 1
+
+            self.spatial_tracker[name] = (current_h, current_w)
+
     def plan_random_mutation(self) -> Dict[str, Any]:
         """
         Plan a random mutation for the model.
