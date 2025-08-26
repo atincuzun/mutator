@@ -56,3 +56,8 @@ mutation_plans/
 
 # Folder to not ignore
 !/mutator/
+!/planning/
+!/utils/
+!/tracking/
+!/core/
+!/execution/
