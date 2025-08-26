@@ -22,8 +22,7 @@ from mutator import config
 from mutator.utils import save_plan_to_file, ModuleSourceTracer
 from mutator.planning import ModelPlanner
 from mutator.code_mutator import CodeMutator
-from mutator.tracking.unique_mutation_tracker import get_mutation_tracker
-from mutator.tracking.plan_uniqueness_tracker import get_plan_tracker
+from mutator.tracking import get_mutation_tracker, get_plan_tracker
 
 # Dataset parameters used throughout the system
 DATASET_PARAMS = {
