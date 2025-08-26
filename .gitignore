@@ -43,6 +43,14 @@ mutation_plans/
 
 # Files to not ignore
 !/.gitignore
+!/COPILOT_INSTRUCTIONS.md
+!/README.md
+!/analyze_results.py
+!/code_mutator.py
+!/config.py
+!/main.py
+!/model_planner.py
+!/utils.py
 
 # Folder to not ignore
 !/mutator/
