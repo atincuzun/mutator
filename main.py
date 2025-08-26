@@ -23,6 +23,38 @@ from mutator.utils import save_plan_to_file, ModuleSourceTracer
 from mutator.model_planner import ModelPlanner
 from mutator.code_mutator import CodeMutator
 from mutator.unique_mutation_tracker import get_mutation_tracker
+from mutator.plan_uniqueness_tracker import get_plan_tracker
+
+# Dataset parameters used throughout the system
+DATASET_PARAMS = {
+    "ImageNet": {
+        "spatial_dims": (224, 224),
+        "output_size": (1000,)
+    },
+    "CIFAR10": {
+        "spatial_dims": (32, 32),
+        "output_size": (10,)
+    },
+    "CIFAR100": {
+        "spatial_dims": (32, 32),
+        "output_size": (100,)
+    },
+    "MNIST": {
+        "spatial_dims": (28, 28),
+        "output_size": (10,)
+    }
+}
+
+def get_dataset_params(dataset_name: str) -> dict:
+    """Get parameters for a specific dataset.
+    
+    Args:
+        dataset_name: Name of the dataset
+        
+    Returns:
+        dict: Dictionary containing dataset parameters
+    """
+    return DATASET_PARAMS.get(dataset_name, DATASET_PARAMS["ImageNet"])
 
 warnings.filterwarnings("ignore")
 
@@ -180,7 +212,6 @@ def run_single_mutation(worker_args):
             return 'skipped_not_string', None
 
         # Determine dataset for this model
-        from mutator.dataset_shapes import get_dataset_params
         dataset = "ImageNet"  # Default to ImageNet
         # Try to get dataset from LEMUR data
         try:
@@ -210,6 +241,17 @@ def run_single_mutation(worker_args):
         if not plan:
             save_plan_to_file(model_name, 'skipped_no_plan', {}, {"reason": "Planner could not find a valid mutation."})
             return 'skipped_no_plan', None
+        
+        # Check if this mutation plan is unique
+        plan_tracker = get_plan_tracker()
+        if not plan_tracker.is_unique_plan(plan):
+            if config.DEBUG_MODE:
+                print(f"  -> Skipping duplicate mutation plan")
+            save_plan_to_file(model_name, 'skipped_duplicate_plan', plan, {"reason": "Duplicate mutation plan"})
+            return 'skipped_duplicate_plan', None
+        else:
+            # Register this unique plan
+            plan_tracker.register_plan(plan)
         
         mutated_model = planner.apply_plan()
         
@@ -307,34 +349,6 @@ def run_single_mutation(worker_args):
         # Save to nn-dataset repository
         # Use nn-dataset hashing (whitespace-insensitive) for consistency
         checksum = uuid4(modified_code)
-<<<<<<< HEAD
-        
-        # Check if this exact mutation already exists
-        model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
-        os.makedirs(model_dir, exist_ok=True)
-        
-        # Look for existing files with this checksum
-        existing_files = [f for f in os.listdir(model_dir) 
-                         if f.startswith(f"mutated_{checksum}_") and f.endswith(".py")]
-
-        if existing_files:
-            # Cleanup temp files before returning
-            if hasattr(original_model, '_temp_module_info'):
-                tn, tp = getattr(original_model, '_temp_module_info')
-                cleanup_temp_module(tn, tp)
-            if 'temp_module_info' in locals() and temp_module_info:
-                tn, tp = temp_module_info
-                cleanup_temp_module(tn, tp)
-                
-            if config.DEBUG_MODE:
-                print(f"[Main] Skipping duplicate mutation: {checksum} already exists at {existing_files[0]}")
-            # Return a special status for duplicate
-            return 'duplicate', {"path": os.path.join(model_dir, existing_files[0]), "checksum": checksum}
-        
-        # Only generate timestamp and save if it's a new unique mutation
-        timestamp = int(time.time() * 1000)  # Millisecond precision
-        model_path = os.path.join(model_dir, f"mutated_{checksum}_{timestamp}.py")
-=======
         # Add timestamp to ensure unique filenames even for identical mutations
         timestamp = int(time.time() * 1000)  # Millisecond precision
         
@@ -357,7 +371,7 @@ def run_single_mutation(worker_args):
                 tn, tp = getattr(original_model, '_temp_module_info')
                 cleanup_temp_module(tn, tp)
             return 'skipped_duplicate', None
-        
+    
         # Register this unique mutation
         mutation_tracker.register_mutation(checksum)
         
@@ -365,7 +379,6 @@ def run_single_mutation(worker_args):
         model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
         os.makedirs(model_dir, exist_ok=True)
         model_path = os.path.join(model_dir, f"{model_name}-ast-{mutation_type}-{checksum}.py")
->>>>>>> 2a1864257d819ef99a7cec446a0a1faa841c1bf4
         
         with open(model_path, 'w') as f:
             f.write(modified_code)

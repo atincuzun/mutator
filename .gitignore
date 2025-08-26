@@ -51,6 +51,8 @@ mutation_plans/
 !/main.py
 !/model_planner.py
 !/utils.py
+!/plan_uniqueness_tracker.py
+!/unique_mutation_tracker.py
 
 # Folder to not ignore
 !/mutator/
