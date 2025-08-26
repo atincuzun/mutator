@@ -11,6 +11,7 @@ import re
 from . import config
 import inspect
 from .utils import is_block_definition_context, is_top_level_net_context, get_available_parameters
+from .plan_uniqueness_tracker import get_plan_tracker
 
 class ModelPlanner:
     VALID_CHANNEL_SIZES = config.VALID_CHANNEL_SIZES
@@ -49,47 +50,68 @@ class ModelPlanner:
 
     def plan_random_mutation(self) -> dict:
         self.clear_plan()
+        plan_tracker = get_plan_tracker()
         
-        # Compute spatial dimensions before planning any mutations
-        self._compute_spatial_dimensions()
+        # Try to generate a unique plan (max 10 attempts to avoid infinite loops)
+        for attempt in range(10):
+            # Compute spatial dimensions before planning any mutations
+            self._compute_spatial_dimensions()
+            
+            # If FX tracing failed, use fallback mutation strategy
+            if not self.fx_compatible:
+                if config.DEBUG_MODE:
+                    print("[ModelPlanner] Using fallback mutation strategy (FX incompatible)")
+                plan = self._plan_fallback_mutation()
+            else:
+                # Check if this is a ConvNeXT-style model by looking for characteristic modules
+                is_convnext_style = self._detect_convnext_architecture()
+                
+                if is_convnext_style:
+                    if config.DEBUG_MODE:
+                        print("[ModelPlanner] Detected ConvNeXT-style architecture, using compatible mutation strategy")
+                    # For ConvNeXT models, focus on mutations that work well with FX tracing
+                    # Prioritize dimension and activation mutations over problematic structural changes
+                    safe_mutation_types = ['dimension', 'activation']
+                    safe_weights = [0.6, 0.4]  # Higher weight on dimension mutations
+                    chosen_mutation_type = random.choices(safe_mutation_types, weights=safe_weights)[0]
+                else:
+                    # Choose mutation type based on configured weights for regular models
+                    mutation_types = list(config.MUTATION_TYPE_WEIGHTS.keys())
+                    weights = list(config.MUTATION_TYPE_WEIGHTS.values())
+                    chosen_mutation_type = random.choices(mutation_types, weights=weights)[0]
+                
+                if chosen_mutation_type == 'dimension':
+                    plan = self._plan_dimension_mutation()
+                elif chosen_mutation_type == 'activation':
+                    plan = self._plan_activation_mutation()
+                elif chosen_mutation_type == 'layer_type':
+                    plan = self._plan_layer_type_mutation()
+                elif chosen_mutation_type == 'architectural':
+                    plan = self._plan_architectural_mutation()
+                elif chosen_mutation_type == 'kernel_size':
+                    plan = self._plan_kernel_size_mutation()
+                elif chosen_mutation_type == 'stride':
+                    plan = self._plan_stride_mutation()
+                else:
+                    plan = self._plan_dimension_mutation()  # fallback
+            
+            # Check if we got a valid plan and if it's unique
+            if plan and plan_tracker.is_unique_plan(plan):
+                plan_tracker.register_plan(plan)
+                if config.DEBUG_MODE:
+                    print(f"[ModelPlanner] Generated unique plan (attempt {attempt + 1})")
+                return plan
+            elif not plan:
+                if config.DEBUG_MODE:
+                    print(f"[ModelPlanner] Failed to generate valid plan (attempt {attempt + 1})")
+            else:
+                if config.DEBUG_MODE:
+                    print(f"[ModelPlanner] Generated duplicate plan, retrying (attempt {attempt + 1})")
         
-        # If FX tracing failed, use fallback mutation strategy
-        if not self.fx_compatible:
-            if config.DEBUG_MODE:
-                print("[ModelPlanner] Using fallback mutation strategy (FX incompatible)")
-            return self._plan_fallback_mutation()
-        
-        # Check if this is a ConvNeXT-style model by looking for characteristic modules
-        is_convnext_style = self._detect_convnext_architecture()
-        
-        if is_convnext_style:
-            if config.DEBUG_MODE:
-                print("[ModelPlanner] Detected ConvNeXT-style architecture, using compatible mutation strategy")
-            # For ConvNeXT models, focus on mutations that work well with FX tracing
-            # Prioritize dimension and activation mutations over problematic structural changes
-            safe_mutation_types = ['dimension', 'activation']
-            safe_weights = [0.6, 0.4]  # Higher weight on dimension mutations
-            chosen_mutation_type = random.choices(safe_mutation_types, weights=safe_weights)[0]
-        else:
-            # Choose mutation type based on configured weights for regular models
-            mutation_types = list(config.MUTATION_TYPE_WEIGHTS.keys())
-            weights = list(config.MUTATION_TYPE_WEIGHTS.values())
-            chosen_mutation_type = random.choices(mutation_types, weights=weights)[0]
-        
-        if chosen_mutation_type == 'dimension':
-            return self._plan_dimension_mutation()
-        elif chosen_mutation_type == 'activation':
-            return self._plan_activation_mutation()
-        elif chosen_mutation_type == 'layer_type':
-            return self._plan_layer_type_mutation()
-        elif chosen_mutation_type == 'architectural':
-            return self._plan_architectural_mutation()
-        elif chosen_mutation_type == 'kernel_size':
-            return self._plan_kernel_size_mutation()
-        elif chosen_mutation_type == 'stride':
-            return self._plan_stride_mutation()
-        else:
-            return self._plan_dimension_mutation()  # fallback
+        # If we reach here, we couldn't generate a unique plan after 10 attempts
+        if config.DEBUG_MODE:
+            print("[ModelPlanner] Could not generate unique plan after 10 attempts")
+        return {}
 
     def _plan_dimension_mutation(self) -> dict:
         """Dimension mutation with unified in/out channel system and free symbolic combinations."""
