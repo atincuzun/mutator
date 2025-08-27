@@ -1,26 +1,63 @@
+"""
+CodeMutator class for applying AST modifications to neural network source code.
+
+This module provides the CodeMutator class which can apply various types of
+modifications to PyTorch neural network source code through AST manipulation.
+"""
+
 import ast
-from . import config
-from . import utils
-from .execution.constants import ARG_TO_POS_MAP
-from .execution.apply_dimension import apply_dimension_modification
-from .execution.apply_symbolic import apply_symbolic_modification
-from .execution.apply_activation import apply_activation_modification
-from .execution.apply_layer_type import apply_layer_type_modification
-from .execution.apply_architectural import apply_architectural_modification
-from .execution.apply_spatial import apply_kernel_size_modification, apply_stride_modification
+from typing import Dict, Any, List, Optional
+
+from mutator import config
+from mutator.execution.constants import ARG_TO_POS_MAP
+from mutator.execution.apply_dimension import apply_dimension_modification
+from mutator.execution.apply_symbolic import apply_symbolic_modification
+from mutator.execution.apply_activation import apply_activation_modification
+from mutator.execution.apply_layer_type import apply_layer_type_modification
+from mutator.execution.apply_architectural import apply_architectural_modification
+from mutator.execution.apply_spatial import apply_kernel_size_modification, apply_stride_modification
+
 
 class CodeMutator(ast.NodeTransformer):
+    """
+    Applies AST modifications to neural network source code.
+    
+    This class can apply various types of modifications including:
+    - Dimension modifications (channel/feature size changes)
+    - Symbolic expression modifications
+    - Activation function changes
+    - Layer type conversions
+    - Architectural modifications
+    - Kernel size changes
+    - Stride modifications
+    """
     
     ARG_TO_POS_MAP = ARG_TO_POS_MAP
 
     def __init__(self, code_string: str):
+        """
+        Initialize the CodeMutator with source code.
+        
+        Args:
+            code_string: The source code to modify
+        """
         self.tree = ast.parse(code_string)
         self.modifications = []
         if config.DEBUG_MODE:
             print("[CodeMutator] Initialized.")
 
-    def _validate_conv_params(self, arg_name: str, new_value: int, node: ast.Call):
-        """Validate convolution parameters to prevent invalid depthwise config"""
+    def _validate_conv_params(self, arg_name: str, new_value: int, node: ast.Call) -> Dict[str, Any]:
+        """
+        Validate convolution parameters to prevent invalid depthwise config.
+        
+        Args:
+            arg_name: The parameter name being modified
+            new_value: The new value for the parameter
+            node: The AST call node being modified
+            
+        Returns:
+            Dictionary of additional modifications needed (e.g., groups parameter)
+        """
         current_params = {}
         
         # Collect current parameters
@@ -38,8 +75,15 @@ class CodeMutator(ast.NodeTransformer):
             return {'groups': 1}  # Convert to standard convolution
         return {}
 
-    def schedule_modification(self, location: dict, arg_name: str, new_value):
-        """Schedule a dimension-based modification (backward compatibility)."""
+    def schedule_modification(self, location: Dict[str, int], arg_name: str, new_value: Any) -> None:
+        """
+        Schedule a dimension-based modification (backward compatibility).
+        
+        Args:
+            location: Source location information (lineno, col_offset)
+            arg_name: Parameter name to modify
+            new_value: New value for the parameter
+        """
         if location and new_value is not None:
             mod = {
                 'type': 'dimension',
@@ -51,8 +95,15 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled dimension modification: {mod}")
 
-    def schedule_symbolic_modification(self, location: dict, arg_name: str, symbolic_expression: str):
-        """Schedule a symbolic expression modification."""
+    def schedule_symbolic_modification(self, location: Dict[str, int], arg_name: str, symbolic_expression: str) -> None:
+        """
+        Schedule a symbolic expression modification.
+        
+        Args:
+            location: Source location information (lineno, col_offset)
+            arg_name: Parameter name to modify
+            symbolic_expression: Symbolic expression to apply
+        """
         if location and symbolic_expression:
             mod = {
                 'type': 'symbolic',
@@ -64,8 +115,14 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled symbolic modification: {mod}")
 
-    def schedule_activation_modification(self, location: dict, new_activation: str):
-        """Schedule an activation function modification."""
+    def schedule_activation_modification(self, location: Dict[str, int], new_activation: str) -> None:
+        """
+        Schedule an activation function modification.
+        
+        Args:
+            location: Source location information (lineno, col_offset)
+            new_activation: New activation function name
+        """
         if location and new_activation:
             mod = {
                 'type': 'activation',
@@ -76,8 +133,15 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled activation modification: {mod}")
 
-    def schedule_layer_type_modification(self, location: dict, new_layer_type: str, params: dict):
-        """Schedule a layer type modification."""
+    def schedule_layer_type_modification(self, location: Dict[str, int], new_layer_type: str, params: Dict[str, Any]) -> None:
+        """
+        Schedule a layer type modification.
+        
+        Args:
+            location: Source location information (lineno, col_offset)
+            new_layer_type: New layer type name
+            params: Additional parameters for the layer type conversion
+        """
         if location and new_layer_type:
             mod = {
                 'type': 'layer_type',
@@ -89,8 +153,15 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled layer type modification: {mod}")
 
-    def schedule_architectural_modification(self, location: dict, architectural_type: str, params: dict):
-        """Schedule an architectural modification for high-level network structure."""
+    def schedule_architectural_modification(self, location: Dict[str, int], architectural_type: str, params: Dict[str, Any]) -> None:
+        """
+        Schedule an architectural modification for high-level network structure.
+        
+        Args:
+            location: Source location information (lineno, col_offset)
+            architectural_type: Type of architectural modification
+            params: Parameters for the architectural modification
+        """
         if location and architectural_type:
             mod = {
                 'type': 'architectural',
@@ -102,8 +173,14 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled architectural modification: {mod}")
 
-    def schedule_kernel_size_modification(self, location: dict, new_kernel_size: int):
-        """Schedule a kernel size modification."""
+    def schedule_kernel_size_modification(self, location: Dict[str, int], new_kernel_size: int) -> None:
+        """
+        Schedule a kernel size modification.
+        
+        Args:
+            location: Source location information (lineno, col_offset)
+            new_kernel_size: New kernel size value
+        """
         if location and new_kernel_size:
             mod = {
                 'type': 'kernel_size',
@@ -114,8 +191,14 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled kernel size modification: {mod}")
 
-    def schedule_stride_modification(self, location: dict, new_stride: int):
-        """Schedule a stride modification."""
+    def schedule_stride_modification(self, location: Dict[str, int], new_stride: int) -> None:
+        """
+        Schedule a stride modification.
+        
+        Args:
+            location: Source location information (lineno, col_offset)
+            new_stride: New stride value
+        """
         if location and new_stride:
             mod = {
                 'type': 'stride',
@@ -126,7 +209,16 @@ class CodeMutator(ast.NodeTransformer):
             if config.DEBUG_MODE:
                 print(f"[CodeMutator] Scheduled stride modification: {mod}")
 
-    def visit_Call(self, node: ast.Call):
+    def visit_Call(self, node: ast.Call) -> ast.Call:
+        """
+        Visit AST Call nodes and apply scheduled modifications.
+        
+        Args:
+            node: AST call node to visit
+            
+        Returns:
+            Modified AST call node
+        """
         self.generic_visit(node)
         
         for mod in self.modifications:
@@ -154,8 +246,16 @@ class CodeMutator(ast.NodeTransformer):
 
         return node
 
-    def visit_List(self, node: ast.List):
-        """Visit List nodes to handle architectural mutations like block_setting."""
+    def visit_List(self, node: ast.List) -> ast.List:
+        """
+        Visit List nodes to handle architectural mutations like block_setting.
+        
+        Args:
+            node: AST list node to visit
+            
+        Returns:
+            Modified AST list node
+        """
         self.generic_visit(node)
         
         for mod in self.modifications:
@@ -172,6 +272,12 @@ class CodeMutator(ast.NodeTransformer):
         return node
 
     def get_modified_code(self) -> str:
+        """
+        Apply all scheduled modifications and return the modified source code.
+        
+        Returns:
+            Modified source code as a string
+        """
         if config.DEBUG_MODE:
             print("[CodeMutator] Applying all scheduled modifications to AST.")
         modified_tree = self.visit(self.tree)

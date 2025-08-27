@@ -20,9 +20,10 @@ from tqdm import tqdm
 import ab.nn.api as nn_dataset
 
 from mutator import config
-from mutator.utils import save_plan_to_file, ModuleSourceTracer
+from mutator.utils.file_utils import save_plan_to_file
+from mutator.utils.source_tracer import ModuleSourceTracer
 from mutator.planning import ModelPlanner
-from mutator.code_mutator import CodeMutator
+from mutator.execution.code_mutator import CodeMutator
 from mutator.tracking import get_mutation_tracker, get_plan_tracker
 from mutator.lemur_io import (
     load_lemur_model,
