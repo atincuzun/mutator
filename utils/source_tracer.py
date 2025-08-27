@@ -198,15 +198,23 @@ class ModuleSourceTracer:
                         lineno = target_frame.lineno
                         call_node = tracer._find_call_node_at_line(lineno)
                         if call_node:
+                            # Convert absolute path to relative path from project root
+                            absolute_path = target_frame.filename
+                            try:
+                                relative_path = os.path.relpath(absolute_path, "f:/mutator_env")
+                            except ValueError:
+                                # Fallback to absolute path if relative path conversion fails
+                                relative_path = absolute_path
+                            
                             module_instance._source_location = {
                                 "lineno": call_node.lineno,
                                 "end_lineno": getattr(call_node, 'end_lineno', call_node.lineno),
                                 "col_offset": call_node.col_offset,
                                 "end_col_offset": getattr(call_node, 'end_col_offset', -1),
-                                "filename": target_frame.filename  # Add filename for source code reading
+                                "filename": relative_path  # Use relative path instead of absolute
                             }
                             if config.DEBUG_MODE:
-                                print(f"[SourceTracer] Captured source location: line {call_node.lineno}, col {call_node.col_offset}, file: {target_frame.filename}")
+                                print(f"[SourceTracer] Captured source location: line {call_node.lineno}, col {call_node.col_offset}, file: {relative_path}")
                         else:
                             if config.DEBUG_MODE:
                                 print(f"[SourceTracer] No AST call node found at line {lineno}")

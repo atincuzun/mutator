@@ -288,9 +288,16 @@ def run_single_mutation(worker_args):
                 if config.DEBUG_MODE:
                     print(f"[WARN] Failed to save mutated model to DB: {e}")
 
+        # Convert absolute model path to relative path for the plan file
+        try:
+            relative_model_path = os.path.relpath(model_path, "f:/mutator_env")
+        except ValueError:
+            # Fallback to absolute path if relative path conversion fails
+            relative_model_path = model_path
+
         # Save plan for successful mutation as well
         try:
-            save_plan_to_file(model_name, 'success', plan, {"checksum": checksum, "model_path": model_path})
+            save_plan_to_file(model_name, 'success', plan, {"checksum": checksum, "model_path": relative_model_path})
         except Exception:
             if config.DEBUG_MODE:
                 print("[WARN] Failed to save success plan file")
