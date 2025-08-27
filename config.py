@@ -2,12 +2,12 @@ import multiprocessing
 import os
 
 # List of specific models to mutate (leave empty to mutate all)
-SPECIFIC_MODELS = ["ResNet"]
+SPECIFIC_MODELS = ["AlexNet"]
 
 DEBUG_MODE = False
 # When True, keeps temporary model source files for debugging.
 KEEP_TEMP_MODEL_FILES = False
-NUM_ATTEMPTS_PER_MODEL = 110
+NUM_ATTEMPTS_PER_MODEL = 100
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"
 NUM_WORKERS = multiprocessing.cpu_count()
@@ -66,11 +66,11 @@ LAYER_TYPE_MUTATIONS = {
 
 # Mutation type weights (probability distribution)
 MUTATION_TYPE_WEIGHTS = {
-    'dimension': 0.0,       # 100% - only dimension mutations (in/out sizes)
-    'activation': 1.0,      # 0% - no activation function mutations
-    'layer_type': 0.0,      # 0% - no layer type mutations
-    'kernel_size': 0.0,     # 0% - no kernel size mutations
-    'stride': 0.0,          # 0% - no stride mutations
+    'dimension': 0.5,       # 100% - only dimension mutations (in/out sizes)
+    'activation': 0.1,      # 0% - no activation function mutations
+    'layer_type': 0.1,      # 0% - no layer type mutations
+    'kernel_size': 0.1,     # 0% - no kernel size mutations
+    'stride': 0.1,          # 0% - no stride mutations
     'architectural': 0.0    # 0% - no architectural mutations
 }
 

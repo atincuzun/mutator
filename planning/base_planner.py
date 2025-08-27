@@ -15,7 +15,12 @@ import torch.nn as nn
 import torch.fx as fx
 
 from mutator import config
-from mutator.utils import ModuleSourceTracer, get_available_parameters
+from mutator.utils import (
+    ModuleSourceTracer,
+    get_available_parameters,
+    read_source_file,
+    find_call_node_at_line,
+)
 from .dimension_planner import DimensionPlanner
 from .activation_planner import ActivationPlanner
 from .layer_planner import LayerTypePlanner
@@ -68,6 +73,8 @@ class ModelPlanner:
             # Try to create FX graph for advanced analysis
             self.graph = fx.symbolic_trace(self.original_model).graph
             self.submodules = dict(self.original_model.named_modules())
+            read_source_file,
+            find_call_node_at_line,
             self.fx_compatible = True
             
             if config.DEBUG_MODE:
@@ -88,7 +95,8 @@ class ModelPlanner:
         else:
             # Default input shape for common vision models
             self.input_shape = (3, 224, 224)
-
+            # Align with config to avoid mismatched target sizes
+            VALID_CHANNEL_SIZES = getattr(config, 'VALID_CHANNEL_SIZES', [8, 16, 32, 64, 128, 256, 512, 1024])
     def _validate_spatial_change(self, module_name: str, new_params: dict) -> bool:
         """Validate if mutation maintains valid spatial dimensions."""
         if module_name not in self.spatial_tracker:
@@ -319,6 +327,24 @@ class ModelPlanner:
     def clear_plan(self):
         """Clear the current mutation plan."""
         self.plan = {}
+
+    # --- Helper wrappers used by planners ---
+    def _get_source_code_for_location(self, source_location: dict) -> str:
+        """Return source code string for a given source location dict.
+
+        Expects a mapping like { 'filename': <path>, 'lineno': <int>, ... }.
+        """
+        try:
+            filename = source_location.get('filename') if isinstance(source_location, dict) else None
+            if not filename:
+                return ""
+            return read_source_file(filename)
+        except Exception:
+            return ""
+
+    def _find_call_node_at_line(self, source_code: str, lineno: int):
+        """Delegate to utils to find the AST Call node at a given line."""
+        return find_call_node_at_line(source_code, lineno)
 
     @classmethod
     def _create_mutated_copy(cls, module: nn.Module, new_in_channels, new_out_channels):
