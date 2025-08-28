@@ -8,7 +8,7 @@ DEBUG_MODE = False
 # When True, keeps temporary model source files for debugging.
 KEEP_TEMP_MODEL_FILES = False
 NUM_ATTEMPTS_PER_MODEL = 100
-PRODUCER_SEARCH_DEPTH = 10
+PRODUCER_SEARCH_DEPTH = 1000
 PLANS_OUTPUT_DIR = "mutation_plans"
 NUM_WORKERS = multiprocessing.cpu_count()
 MAX_CORES_TO_USE = 12
