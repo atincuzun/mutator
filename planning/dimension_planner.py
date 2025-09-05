@@ -40,10 +40,108 @@ class DimensionPlanner:
     def plan_dimension_mutation(self) -> Dict[str, Any]:
         """
         Plan a dimension mutation with unified in/out channel system and symbolic expressions.
+        Enhanced with block-aware novel architecture generation.
         
         Returns:
             Dictionary containing the dimension mutation plan
         """
+        # Try block-aware mutations first for ResNet-like architectures
+        block_aware_plan = self._try_block_aware_mutation()
+        if block_aware_plan:
+            return block_aware_plan
+            
+        # Fallback to original mutation system
+        return self._plan_traditional_mutation()
+        
+    def _try_block_aware_mutation(self) -> Optional[Dict[str, Any]]:
+        """Attempt block-aware mutations for novel architectures."""
+        from mutator.planning.architecture_patterns import pattern_detector
+        
+        if not self.model_planner.graph:
+            if config.DEBUG_MODE:
+                print("[DimensionPlanner] No FX graph available for block-aware mutation")
+            return None
+            
+        # Find block instance groups
+        try:
+            block_groups = pattern_detector.find_block_instance_groups(
+                self.model_planner.original_model, 
+                self.model_planner.graph
+            )
+            
+            if config.DEBUG_MODE:
+                print(f"[DimensionPlanner] Found {len(block_groups)} block groups: {list(block_groups.keys())}")
+            
+            if not block_groups:
+                if config.DEBUG_MODE:
+                    print("[DimensionPlanner] No block groups found, falling back to traditional mutation")
+                return None
+                
+            # Select a random block group to mutate
+            import random
+            group_id = random.choice(list(block_groups.keys()))
+            block_modules = block_groups[group_id]
+            
+            if config.DEBUG_MODE:
+                print(f"[DimensionPlanner] Selected block group {group_id} with modules: {block_modules[:3]}...")
+            
+            # Generate novel mutations for this block
+            base_params = {'planes': None}  # Will be determined contextually
+            novel_mutations = pattern_detector.generate_novel_block_mutations(
+                block_modules, base_params
+            )
+            
+            if config.DEBUG_MODE:
+                print(f"[DimensionPlanner] Generated {len(novel_mutations)} novel mutations")
+            
+            if novel_mutations:
+                # Apply source location information
+                current_plan = {}
+                for module_name, mutation_info in novel_mutations.items():
+                    if module_name in self.model_planner.source_map:
+                        mutation_info['source_location'] = self.model_planner.source_map[module_name]
+                    current_plan[module_name] = mutation_info
+                
+                if config.DEBUG_MODE:
+                    print(f"[DimensionPlanner] Generated block-aware mutation for group {group_id}")
+                    print(f"[DimensionPlanner] Novel mutations: {list(novel_mutations.keys())}")
+                
+                # Store the plan in the model planner
+                self.model_planner.plan = current_plan
+                return current_plan
+        
+        except Exception as e:
+            if config.DEBUG_MODE:
+                print(f"[DimensionPlanner] Error in block-aware mutation: {e}")
+        
+        return None
+        
+    def _plan_traditional_mutation(self) -> Dict[str, Any]:
+        """Traditional mutation planning (fallback method)."""
+        mutation_groups = self._build_mutation_groups()
+        if not mutation_groups:
+            return {}
+
+        # Compute spatial dimensions if not already done
+        if not self.model_planner.spatial_tracker:
+            self.model_planner._compute_spatial_dimensions()
+
+        # Find a valid mutation group
+        valid_mutation_group = None
+        original_dim = None
+        new_dim = None
+        
+        # Try up to 10 times to find a valid mutation (increased for more flexibility)
+        for _ in range(10):
+            mutation_group = random.choice(mutation_groups)
+            original_dim_module = self.model_planner.submodules[mutation_group[0].target]
+            original_dim = (original_dim_module.out_channels if isinstance(original_dim_module, nn.Conv2d) 
+                          else original_dim_module.out_features)
+
+            # Use unified channel dimension changer: start with random mutation
+            # Choose a mutation factor from a wider range for more diversity
+            mutation_factors = [0.25, 0.5, 0.75, 1.25, 1.5, 1.75, 2, 3, 4, 5, 6, 7, 8]
+            mutation_factor = random.choice(mutation_factors)
         mutation_groups = self._build_mutation_groups()
         if not mutation_groups:
             return {}

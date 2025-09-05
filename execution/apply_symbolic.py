@@ -7,6 +7,20 @@ from mutator import config
 from .constants import ARG_TO_POS_MAP
 
 
+def _is_make_layer_call(node: ast.Call) -> bool:
+    """
+    Check if this is a _make_layer method call that should have its first argument protected.
+    """
+    # Extract function name from the call
+    func_name = None
+    if isinstance(node.func, ast.Name):
+        func_name = node.func.id
+    elif isinstance(node.func, ast.Attribute):
+        func_name = node.func.attr
+    
+    return func_name == '_make_layer'
+
+
 def apply_symbolic_modification(node: ast.Call, mod: Dict) -> None:
     """Apply symbolic expression modifications."""
     modified = False
@@ -20,6 +34,12 @@ def apply_symbolic_modification(node: ast.Call, mod: Dict) -> None:
             print(f"  > ERROR: Could not parse symbolic expression '{symbolic_expr}'")
         return
 
+    # SAFETY CHECK: Prevent replacing 'block' argument in _make_layer calls
+    if _is_make_layer_call(node) and mod['arg_name'] in ARG_TO_POS_MAP and ARG_TO_POS_MAP[mod['arg_name']] == 0:
+        if config.DEBUG_MODE:
+            print(f"  > SKIPPING: Cannot replace first argument (block) in _make_layer call")
+        return
+
     # Replace keyword argument
     for kw in node.keywords:
         if kw.arg == mod['arg_name']:
@@ -30,7 +50,7 @@ def apply_symbolic_modification(node: ast.Call, mod: Dict) -> None:
             break
 
     # Or positional
-    if not modified and mod['arg_name'] in ARG_TO_POS_MAP:
+    if not modified and mod['arg_name'] in ARG_TO_POS_MAP:            
         pos_index = ARG_TO_POS_MAP[mod['arg_name']]
         if pos_index < len(node.args):
             old_val = getattr(node.args[pos_index], 'value', 'unknown')
