@@ -48,6 +48,21 @@ class DimensionPlanner:
         if not mutation_groups:
             return {}
 
+        # Find the final layer in the graph to protect its output dimension.
+        # We iterate backwards from the 'output' node of the graph.
+        final_layer_name = None
+        if self.model_planner.graph:
+            for node in reversed(self.model_planner.graph.nodes):
+                if node.op == 'call_module' and isinstance(
+                    self.model_planner.submodules.get(node.target), (nn.Conv2d, nn.Linear)
+                ):
+                    final_layer_name = node.target
+                    if config.DEBUG_MODE:
+                        print(f"[DimensionPlanner] Identified final layer: {final_layer_name}. Its output will be protected.")
+                    break
+        # Attach the final layer name to the main planner instance so helper methods can access it.
+        setattr(self.model_planner, 'final_layer_name', final_layer_name)
+
         # Compute spatial dimensions if not already done
         if not self.model_planner.spatial_tracker:
             self.model_planner._compute_spatial_dimensions()
@@ -57,37 +72,32 @@ class DimensionPlanner:
         original_dim = None
         new_dim = None
         
-        # Try up to 10 times to find a valid mutation (increased for more flexibility)
-        for _ in range(10):
+        # Try up to 20 times to find a valid mutation
+        for _ in range(20):
             mutation_group = random.choice(mutation_groups)
             original_dim_module = self.model_planner.submodules[mutation_group[0].target]
             original_dim = (original_dim_module.out_channels if isinstance(original_dim_module, nn.Conv2d) 
                           else original_dim_module.out_features)
 
-            # Use unified channel dimension changer: start with random mutation
-            # Choose a mutation factor from a wider range for more diversity
-            mutation_factors = [0.25, 0.5, 0.75, 1.25, 1.5, 1.75, 2, 3, 4, 5, 6, 7, 8]
-            mutation_factor = random.choice(mutation_factors)
+            # 1. Get the list of valid sizes directly from the planner's config.
+            #    Filter out the current dimension to ensure a change happens.
+            possible_new_dims = [
+                size for size in self.model_planner.VALID_CHANNEL_SIZES if size != original_dim
+            ]
             
-            # Calculate proposed new dimension
-            proposed_dim = int(original_dim * mutation_factor)
+            if not possible_new_dims:
+                continue # This layer's dimension isn't in our list, or no alternatives exist. Try another group.
+
+            # 2. Directly choose a new dimension from the filtered list.
+            new_dim = random.choice(possible_new_dims)
             
-            # Round to nearest valid channel size
-            new_dim = min(self.model_planner.VALID_CHANNEL_SIZES, 
-                         key=lambda x: abs(x - proposed_dim))
+            # Validate that this mutation won't break downstream layers (e.g., group convolution)
+            consumers, _ = self._find_downstream_dependencies(mutation_group)
             
-            # Ensure it's different from original
-            if new_dim == original_dim:
-                continue
-                
-            # Validate that this mutation won't break downstream layers
-            consumers, propagators = self._find_downstream_dependencies(mutation_group)
-            
-            # Check if all consumers can accept the new dimension
             valid = True
             for consumer_node in consumers:
                 module = self.model_planner.submodules.get(consumer_node.target)
-                if isinstance(module, nn.Conv2d) and new_dim % module.groups != 0:
+                if isinstance(module, nn.Conv2d) and module.groups > 1 and new_dim % module.groups != 0:
                     valid = False
                     break
                     
@@ -97,15 +107,12 @@ class DimensionPlanner:
         
         if not valid_mutation_group:
             if config.DEBUG_MODE:
-                print("[DimensionPlanner] Could not find valid dimension mutation after 10 attempts")
+                print("[DimensionPlanner] Could not find valid dimension mutation after 20 attempts")
             return {}
             
         mutation_group = valid_mutation_group
         consumers, propagators = self._find_downstream_dependencies(mutation_group)
         current_plan = {}
-        
-        # Calculate scaling factor for the mutation
-        scaling_factor = new_dim / original_dim
         
         # Decide whether to attempt symbolic expressions
         use_symbolic = self._should_use_symbolic_mutation_for_group(mutation_group)
@@ -117,21 +124,45 @@ class DimensionPlanner:
         # Collect original dims for each node
         original_dims = self._collect_original_dimensions(mutation_group, consumers, propagators)
         
-        # Unified propagation: apply the same mutation pattern throughout the group
-        self._apply_mutations_to_producers(
-            mutation_group, current_plan, new_dim, use_symbolic, original_dims, group_expr
-        )
-        self._apply_mutations_to_consumers(
-            consumers, current_plan, new_dim, use_symbolic, original_dims, group_expr
-        )
-        self._apply_mutations_to_propagators(
-            propagators, current_plan, new_dim, use_symbolic, original_dims, group_expr
-        )
+        # Choose propagation direction based on probability weights
+        direction = random.choices(
+            ['forward', 'backward'],
+            weights=[
+                config.PROPAGATION_DIRECTION_WEIGHTS['forward'],
+                config.PROPAGATION_DIRECTION_WEIGHTS['backward']
+            ],
+            k=1
+        )[0]
+        
+        if config.DEBUG_MODE:
+            print(f"[DimensionPlanner] Using {direction} propagation")
+        
+        if direction == 'forward':
+            # Forward propagation (existing logic)
+            self._apply_mutations_to_producers(
+                mutation_group, current_plan, new_dim, use_symbolic, original_dims, group_expr
+            )
+            self._apply_mutations_to_consumers(
+                consumers, current_plan, new_dim, use_symbolic, original_dims, group_expr
+            )
+            self._apply_mutations_to_propagators(
+                propagators, current_plan, new_dim, use_symbolic, original_dims, group_expr
+            )
+        else:
+            # Backward propagation
+            self._apply_backward_propagation(
+                mutation_group, current_plan, new_dim, use_symbolic, original_dims, group_expr
+            )
 
         self.model_planner.plan = current_plan
         if config.DEBUG_MODE:
             print("[DimensionPlanner] Generated unified dimension mutation plan:")
             print(json.dumps(current_plan, indent=2))
+        
+        # Clean up the temporary attribute after planning is complete
+        if hasattr(self.model_planner, 'final_layer_name'):
+            delattr(self.model_planner, 'final_layer_name')
+
         return current_plan
 
     def _build_mutation_groups(self) -> List[List[fx.Node]]:
@@ -348,6 +379,7 @@ class DimensionPlanner:
                                     group_expr: Optional[str]):
         """Apply mutations to producer nodes."""
         for node in mutation_group:
+            # Check if this node is the final layer. If so, do not mutate its output.
             if hasattr(self.model_planner, 'final_layer_name') and node.target == self.model_planner.final_layer_name:
                 continue
                 
@@ -518,3 +550,73 @@ class DimensionPlanner:
             if config.DEBUG_MODE:
                 print(f"[DimensionPlanner] Using fixed-number mutation for group (weighted probability)")
             return False
+
+    def _apply_backward_propagation(self, mutation_group: List[fx.Node], 
+                                  current_plan: Dict[str, Any], 
+                                  new_dim: int, 
+                                  use_symbolic: bool, 
+                                  original_dims: Dict[str, Optional[int]],
+                                  group_expr: Optional[str]):
+        """Apply mutations using backward propagation strategy."""
+        # Find input dependencies for the mutation group
+        input_dependencies = self._find_input_dependencies(mutation_group)
+        
+        # Apply mutations to input dependencies first
+        for input_node in input_dependencies:
+            if input_node.target not in current_plan:
+                current_plan[input_node.target] = self._get_base_plan(input_node.target)
+            
+            # Set output dimension for input dependencies
+            current_plan[input_node.target]["new_out"] = new_dim
+            
+            if use_symbolic:
+                if group_expr:
+                    current_plan[input_node.target]["symbolic"] = True
+                    current_plan[input_node.target]["symbolic_expression"] = group_expr
+                else:
+                    params = self._get_available_params(input_node.target)
+                    sym_expr = self._synthesize_symbolic(original_dims.get(input_node.target), new_dim, params)
+                    if sym_expr:
+                        current_plan[input_node.target]["symbolic"] = True
+                        current_plan[input_node.target]["symbolic_expression"] = sym_expr
+                    else:
+                        current_plan[input_node.target]["symbolic"] = False
+            else:
+                current_plan[input_node.target]["symbolic"] = False
+
+        # Then apply to the mutation group itself
+        for node in mutation_group:
+            if node.target not in current_plan:
+                current_plan[node.target] = self._get_base_plan(node.target)
+            
+            # Set input dimension for the group
+            current_plan[node.target]["new_in"] = new_dim
+            
+            if use_symbolic:
+                if group_expr:
+                    current_plan[node.target]["symbolic"] = True
+                    current_plan[node.target]["symbolic_expression"] = group_expr
+                else:
+                    params = self._get_available_params(node.target)
+                    sym_expr = self._synthesize_symbolic(original_dims.get(node.target), new_dim, params)
+                    if sym_expr:
+                        current_plan[node.target]["symbolic"] = True
+                        current_plan[node.target]["symbolic_expression"] = sym_expr
+                    else:
+                        current_plan[node.target]["symbolic"] = False
+            else:
+                current_plan[node.target]["symbolic"] = False
+
+    def _find_input_dependencies(self, mutation_group: List[fx.Node]) -> List[fx.Node]:
+        """Find nodes that provide input to the mutation group."""
+        input_dependencies = set()
+        
+        for node in mutation_group:
+            # Trace backwards through input nodes
+            for input_node in node.all_input_nodes:
+                if (input_node.op == 'call_module' and 
+                    isinstance(self.model_planner.submodules.get(input_node.target), 
+                              (nn.Conv2d, nn.Linear))):
+                    input_dependencies.add(input_node)
+        
+        return list(input_dependencies)

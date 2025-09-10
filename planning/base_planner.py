@@ -27,6 +27,7 @@ from .layer_planner import LayerTypePlanner
 from .spatial_planner import SpatialPlanner
 from .architectural_planner import ArchitecturalPlanner
 from .fallback_planner import FallbackPlanner
+from mutator.utils.fx_graph_utils import get_detailed_graph
 
 
 class ModelPlanner:
@@ -40,7 +41,6 @@ class ModelPlanner:
     
     MUTABLE_MODULES = (nn.Conv2d, nn.Linear, nn.BatchNorm2d, nn.LayerNorm)
     ACTIVATION_MODULES = (nn.ReLU, nn.GELU, nn.ELU, nn.LeakyReLU, nn.Tanh, nn.Sigmoid, nn.SiLU)
-    VALID_CHANNEL_SIZES = [8, 16, 32, 64, 128, 256, 512, 1024]
     
     def __init__(self, model: nn.Module, source_map: dict = None, search_depth: int = 3):
         """
@@ -56,6 +56,9 @@ class ModelPlanner:
         self.search_depth = search_depth
         self.plan = {}
         
+        # Correctly load VALID_CHANNEL_SIZES from config.py
+        self.VALID_CHANNEL_SIZES = config.VALID_CHANNEL_SIZES
+        
         # Initialize specialized planners
         self.dimension_planner = DimensionPlanner(self)
         self.activation_planner = ActivationPlanner(self)
@@ -70,11 +73,9 @@ class ModelPlanner:
     def _initialize_model_analysis(self):
         """Initialize model analysis components."""
         try:
-            # Try to create FX graph for advanced analysis
-            self.graph = fx.symbolic_trace(self.original_model).graph
+            # Use our custom utility to get a detailed graph
+            self.graph = get_detailed_graph(self.original_model)
             self.submodules = dict(self.original_model.named_modules())
-            read_source_file,
-            find_call_node_at_line,
             self.fx_compatible = True
             
             if config.DEBUG_MODE:
@@ -95,8 +96,7 @@ class ModelPlanner:
         else:
             # Default input shape for common vision models
             self.input_shape = (3, 224, 224)
-            # Align with config to avoid mismatched target sizes
-            VALID_CHANNEL_SIZES = getattr(config, 'VALID_CHANNEL_SIZES', [8, 16, 32, 64, 128, 256, 512, 1024])
+
     def _validate_spatial_change(self, module_name: str, new_params: dict) -> bool:
         """Validate if mutation maintains valid spatial dimensions."""
         if module_name not in self.spatial_tracker:

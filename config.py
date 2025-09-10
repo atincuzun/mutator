@@ -7,12 +7,12 @@ SPECIFIC_MODELS = ["AlexNet"]
 DEBUG_MODE = False
 # When True, keeps temporary model source files for debugging.
 KEEP_TEMP_MODEL_FILES = False
-NUM_ATTEMPTS_PER_MODEL = 100
+NUM_ATTEMPTS_PER_MODEL = 2000
 PRODUCER_SEARCH_DEPTH = 10
 PLANS_OUTPUT_DIR = "mutation_plans"
 NUM_WORKERS = multiprocessing.cpu_count()
-MAX_CORES_TO_USE = 12
-VALID_CHANNEL_SIZES = [16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 256, 320, 512, 640, 768, 1024]
+MAX_CORES_TO_USE = 8
+VALID_CHANNEL_SIZES = [n for n in range(4, 1025)]
 
 # Root folder where mutated models are written (can be changed by the user)
 # Default: within this repository under mutator/nn-dataset/mutated_models
@@ -66,12 +66,20 @@ LAYER_TYPE_MUTATIONS = {
 
 # Mutation type weights (probability distribution)
 MUTATION_TYPE_WEIGHTS = {
-    'dimension': 0.5,       # 100% - only dimension mutations (in/out sizes)
-    'activation': 0.1,      # 0% - no activation function mutations
-    'layer_type': 0.1,      # 0% - no layer type mutations
-    'kernel_size': 0.1,     # 0% - no kernel size mutations
-    'stride': 0.1,          # 0% - no stride mutations
+    'dimension': 1.00,       # 100% - only dimension mutations (in/out sizes)
+    'activation': 0.0,      # 0% - no activation function mutations
+    'layer_type': 0.0,      # 0% - no layer type mutations
+    'kernel_size': 0.0,     # 0% - no kernel size mutations
+    'stride': 0.0,          # 0% - no stride mutations
     'architectural': 0.0    # 0% - no architectural mutations
+}
+
+# --- DIMENSION MUTATION STRATEGY ---
+# Probability distribution for choosing forward (producer-led) vs.
+# backward (consumer-led) dimension propagation.
+PROPAGATION_DIRECTION_WEIGHTS = {
+    'forward': 0.5,  # 70% chance for forward propagation
+    'backward': 0.5   # 30% chance for backward propagation
 }
 
 # Kernel size mutations for Conv2d layers
@@ -119,7 +127,7 @@ TOP_LEVEL_CLASS_PATTERNS = ['Net']
 
 # Mutation mode configuration
 # Options: 'auto' (context-aware), 'always_symbolic', 'always_fixed'
-MUTATION_MODE = 'always_symbolic'
+MUTATION_MODE = 'always_fixed'
 
 # Symbolic mutation weights (probability distribution for symbolic vs fixed mutations)
 # Only used when MUTATION_MODE is 'auto'
