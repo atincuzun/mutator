@@ -248,7 +248,7 @@ def run_single_mutation(worker_args):
         # Use configurable output root from config
         model_dir = os.path.join(config.MUTATED_MODELS_OUTPUT_ROOT, model_name)
         os.makedirs(model_dir, exist_ok=True)
-        model_path = os.path.join(model_dir, f"{model_name}-ast-{mutation_type}-{checksum}.py")
+        model_path = os.path.join(model_dir, f"ast-{mutation_type}-{model_name}-{checksum}.py")
 
         with open(model_path, 'w', encoding='utf-8') as f:
             f.write(modified_code)
